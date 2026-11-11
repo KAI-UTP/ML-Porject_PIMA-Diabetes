@@ -1,0 +1,17 @@
+model,n_train,split,roc_auc
+Logistic / engineered,115,train,0.8914728682170542
+Logistic / engineered,115,validation,0.8248148148148148
+Random forest,115,train,0.9741602067183462
+Random forest,115,validation,0.8401851851851851
+Logistic / engineered,230,train,0.8843052372464137
+Logistic / engineered,230,validation,0.8398148148148149
+Random forest,230,train,0.9722434428316782
+Random forest,230,validation,0.8394444444444444
+Logistic / engineered,345,train,0.8649276859504132
+Logistic / engineered,345,validation,0.8375925925925926
+Random forest,345,train,0.9722181227863045
+Random forest,345,validation,0.8422222222222222
+Logistic / engineered,460,train,0.8725357817985416
+Logistic / engineered,460,validation,0.8525925925925926
+Random forest,460,train,0.974428218284551
+Random forest,460,validation,0.8346296296296296

@@ -1,0 +1,29 @@
+{
+  "source_url": "https://raw.githubusercontent.com/jbrownlee/Datasets/master/pima-indians-diabetes.data.csv",
+  "source_sha256": "6bfe5d0f379d17a0e0819b996407e3c09bf80febd4287f2ed212190dfff154af",
+  "seed": 42,
+  "rows": 768,
+  "split_counts": {
+    "train": 460,
+    "validation": 154,
+    "test": 154
+  },
+  "class_counts": {
+    "0": 500,
+    "1": 268
+  },
+  "audit": {
+    "raw_rows": 768,
+    "duplicate_rows": 0,
+    "invalid_zero_counts": {
+      "glucose": 5,
+      "blood_pressure": 35,
+      "skin_thickness": 227,
+      "insulin": 374,
+      "bmi": 11
+    },
+    "invalid_rows_removed": 0
+  },
+  "classification_target": "Outcome: diabetes test result (0/1)",
+  "regression_target": "BMI, using only rows where BMI was recorded and excluding BMI-derived predictors"
+}
