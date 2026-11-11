@@ -25,7 +25,7 @@ python -m venv .venv
 
 - `data_pipeline.py`: download, validation, missing values, and train/validation/test split.
 - `train.py`: classification, BMI regression, ANN, feature experiments, and saved results.
-- `app.py`: Streamlit dashboard.
+- `app.py`: Streamlit dashboard with model evaluation, patient-level model comparison, sensitivity, and what-if analysis.
 - `notebooks/PIMA_Diabetes_Project.ipynb`: executed analysis.
 - `reports/REPORT.html`: report with measured results.
 - `reports/PRESENTATION_OUTLINE.md`: concise presentation structure.

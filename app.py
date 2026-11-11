@@ -121,11 +121,44 @@ elif page=="Prediction lab":
         b.metric("Decision cutoff",f"{threshold:.1%}",border=True)
         c.metric("Model output","Above cutoff" if pr>=threshold else "Below cutoff",border=True)
 
-        score_tab,context_tab,explain_tab,whatif_tab=st.tabs(["Score","Cohort context","Model sensitivity","What-if curve"])
+        comparison_names=list(classifiers())+["PyTorch ANN"]
+        comparison=pd.DataFrame({"model":comparison_names,"score":[float(predict_probability(model,x)[0]) for model in comparison_names]})
+        metrics=table("classification_metrics.csv")
+        validation=metrics[metrics.split=="validation"].set_index("model")
+        test=metrics[metrics.split=="test"].set_index("model")
+        comparison["cutoff"]=comparison.model.map(lambda model:float(summary["threshold"] if model==summary["winner"] else .5))
+        comparison["output"]=np.where(comparison.score>=comparison.cutoff,"Above","Below")
+        comparison["validation_roc_auc"]=comparison.model.map(validation.roc_auc)
+        comparison["test_roc_auc"]=comparison.model.map(test.roc_auc)
+
+        score_tab,compare_tab,context_tab,explain_tab,whatif_tab=st.tabs(["Score","Model comparison","Cohort context","Model sensitivity","What-if curve"])
         with score_tab:
             fig=go.Figure(go.Indicator(mode="gauge+number",value=100*pr,number={"suffix":"%","valueformat":".1f"},gauge={"axis":{"range":[0,100],"ticksuffix":"%"},"bar":{"color":"#7147B8"},"threshold":{"line":{"color":"#E1785C","width":4},"value":100*threshold}}))
             fig.update_layout(title="Predicted probability and decision cutoff",height=330);chart(fig)
             st.caption("The marker is the model's decision cutoff. It is not a medical diagnostic threshold.")
+
+        with compare_tab:
+            winner=summary["winner"];winner_val=float(validation.loc[winner,"roc_auc"]);winner_test=float(test.loc[winner,"roc_auc"])
+            a,b,c=st.columns(3)
+            a.metric("Best validated model",winner,border=True)
+            b.metric("Validation ROC-AUC",f"{winner_val:.3f}",border=True)
+            c.metric("Test ROC-AUC",f"{winner_test:.3f}",border=True)
+
+            ordered=comparison.sort_values("score")
+            colors=["#7147B8" if model==winner else "#A9A0B5" for model in ordered.model]
+            fig=go.Figure()
+            fig.add_bar(x=ordered.score,y=ordered.model,orientation="h",text=ordered.score,texttemplate="%{text:.1%}",textposition="outside",marker_color=colors,name="Patient score")
+            fig.add_scatter(x=ordered.cutoff,y=ordered.model,mode="markers",marker={"symbol":"diamond","size":11,"color":"#E1785C"},name="Decision cutoff")
+            fig.update_layout(title="Same patient scored by every model",xaxis_title="Predicted probability",yaxis_title="",xaxis_tickformat=".0%",xaxis_range=[0,1],barmode="overlay");chart(fig)
+
+            leaderboard=metrics[metrics.split=="validation"].copy().sort_values("roc_auc")
+            leaderboard["status"]=np.where(leaderboard.model==winner,"Selected best","Other model")
+            fig=px.bar(leaderboard,x="roc_auc",y="model",orientation="h",color="status",text="roc_auc",color_discrete_map={"Selected best":"#7147B8","Other model":"#A9A0B5"},title="Validation ROC-AUC determines the best model",labels={"roc_auc":"Validation ROC-AUC","model":"","status":""})
+            fig.update_traces(texttemplate="%{text:.3f}",textposition="outside");fig.update_xaxes(range=[0,1]);chart(fig)
+
+            display=comparison.sort_values("validation_roc_auc",ascending=False).rename(columns={"model":"Model","score":"Patient score","cutoff":"Cutoff","output":"Output","validation_roc_auc":"Validation ROC-AUC","test_roc_auc":"Test ROC-AUC"})
+            st.dataframe(display[["Model","Patient score","Cutoff","Output","Validation ROC-AUC","Test ROC-AUC"]],column_config={"Patient score":st.column_config.ProgressColumn(format="percent",min_value=0,max_value=1),"Cutoff":st.column_config.NumberColumn(format="percent"),"Validation ROC-AUC":st.column_config.NumberColumn(format="%.3f"),"Test ROC-AUC":st.column_config.NumberColumn(format="%.3f")},hide_index=True,width="stretch")
+            st.caption("Best means highest validation ROC-AUC. Patient probability is not used to choose the winning model.")
 
         with context_tab:
             preds=table("classification_predictions.csv");preds=preds[(preds.split=="test")&(preds.model==name)]
