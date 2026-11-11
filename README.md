@@ -14,7 +14,7 @@ Then open http://127.0.0.1:8502.
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements-validated.txt
 .\.venv\Scripts\python.exe data_pipeline.py
 .\.venv\Scripts\python.exe train.py
 .\.venv\Scripts\python.exe build_deliverables.py
@@ -31,3 +31,9 @@ python -m venv .venv
 - `reports/PRESENTATION_OUTLINE.md`: concise presentation structure.
 
 The prediction page is for coursework demonstration, not diagnosis. The report needs student names and group review before submission.
+
+`requirements-validated.txt` records the tested direct dependency versions. `requirements.txt` gives broader supported ranges; retrain before loading saved models after changing scikit-learn versions. The tested PyTorch build was CPU-only. This is not a complete transitive lockfile or a fresh-environment installation certification.
+
+The executed notebook reruns data preparation and training. The report generator executes that notebook, so run it after training. Start the dashboard after generation finishes; restart a running dashboard after retraining to reload all artifacts together.
+
+See `docs/REQUIREMENTS_AUDIT.md` for evidence against every assignment item and the remaining student submission tasks. Threshold-dependent metrics use the selected operating policy consistently. Controlled feature experiments use fixed C=1; the separately tuned models form the prediction leaderboard.

@@ -14,6 +14,8 @@ Zeros in glucose, blood pressure, skin thickness, insulin, and BMI are physiolog
 
 Engineered classification features are age bands, glucose × age, pregnancies ÷ age, and glucose × BMI. Embedded Extra Trees selection is compared with all engineered features. BMI regression excludes BMI and every BMI-derived feature from its inputs. Only recorded BMI values form its target.
 
+Outliers are detected using 1.5 × IQR fences fitted on training measurements only. There are 59 flagged training measurements across features (not unique patients). Extremes are retained: unusual measurements may be clinically meaningful, and removing them without evidence could bias the population. Negative predictors, non-finite values, non-integer ages/pregnancy counts, invalid outcomes, and duplicate records are checked before splitting. Age bands are one-hot encoded; numeric variables use training medians and, where specified, standard scaling.
+
 ## Models and evaluation
 
 Classification compares a prevalence baseline, four logistic variants, decision tree, random forest, and a 32–16 PyTorch ANN. Five-fold stratified cross-validation tunes classical classifiers. The validation set selects the model by ROC-AUC and selects an F1 threshold. The test set is reserved for reporting.
@@ -50,7 +52,43 @@ The selected BMI regressor is **Random forest regressor**, with test RMSE **5.40
 
 ## Discussion
 
-The ablation shows whether scaling, engineered features, or embedded selection changes generalization. Feature selection can simplify a model without guaranteeing higher performance. Learning curves compare training and validation behavior as the training sample grows. The ANN uses dropout and early stopping; its best checkpoint is epoch 97.
+### How did preprocessing and feature selection affect generalization?
+
+The controlled ablation holds logistic C=1, the data split, and CV folds fixed. Its validation ROC-AUC and training-fold CV results are:
+
+| variant | roc_auc | cv_mean | cv_std |
+| --- | --- | --- | --- |
+| Raw | 0.865 | 0.829 | 0.046 |
+| Scaled | 0.862 | 0.823 | 0.045 |
+| Engineered | 0.859 | 0.832 | 0.050 |
+| Selected | 0.861 | 0.841 | 0.044 |
+
+Scaling changes validation ROC-AUC by -0.0028; engineering changes it by -0.0024; selection changes it by +0.0013. The final tuned selector retains 12 of 23 transformed columns. These are observed differences on one split, not significance claims. Scaling also changes the effective regularization penalty. The separately tuned leaderboard is not a controlled ablation.
+
+### Which model performed best and why?
+
+Logistic / raw has the highest validation ROC-AUC among the candidate classifiers; Random forest regressor has the lowest validation RMSE among regressors. Classification and regression metrics answer different questions and cannot identify one winner across tasks. A plausible explanation for competitive logistic performance is that this small numeric dataset supports a relatively simple decision boundary; the experiment does not prove this mechanism. The ANN uses dropout, weight decay, and early stopping, with best checkpoint at epoch 97.
+
+### How did size, quality, and data type influence overfitting?
+
+Only 460 observations train the classifiers. Insulin and skinfold missingness reduces effective information; correlated interactions add complexity. Numeric measurements plus engineered categorical age bands require different transformations. Train/validation ROC-AUC gaps quantify overfitting evidence:
+
+| model | train | validation | train_minus_validation |
+| --- | --- | --- | --- |
+| Decision tree | 0.915 | 0.763 | 0.153 |
+| Logistic / engineered | 0.873 | 0.853 | 0.020 |
+| Logistic / raw | 0.853 | 0.865 | -0.012 |
+| Logistic / scaled | 0.854 | 0.862 | -0.008 |
+| Logistic / selected | 0.862 | 0.855 | 0.006 |
+| Prevalence baseline | 0.500 | 0.500 | 0.000 |
+| PyTorch ANN | 0.864 | 0.861 | 0.003 |
+| Random forest | 0.974 | 0.835 | 0.140 |
+
+A larger positive gap is consistent with overfitting, but neither a single gap nor a single-seed learning curve estimates variance reliably. Increasing training data, constraining tree depth/leaf sizes, and using ANN dropout can reduce variance. The existing learning curves use fixed tuned settings and are descriptive. Five-fold CV tunes classical candidates; the ANN instead uses the validation set for early stopping. Sharing validation for early stopping, winner selection and threshold choice can make validation results optimistic. No settings are selected using test scores, but the test set has been inspected during development, so fresh external validation remains necessary.
+
+### What is recommended for real-world healthcare analytics?
+
+Use representative, consented, externally validated data; investigate missingness mechanisms and subgroup performance; validate calibration and select thresholds against explicitly agreed costs. Add prospective monitoring, human review and privacy controls. A threshold chosen for F1 does not encode clinical harm or establish clinical suitability. The app's single-feature sensitivity and what-if plots describe associations in the fitted model, not treatment effects.
 
 The dataset is small, historical, and population-specific. Missing measurements may not be missing at random. A random split does not test future or external populations. Real deployment would require broader data, external validation, calibration, subgroup evaluation, and clinical review.
 

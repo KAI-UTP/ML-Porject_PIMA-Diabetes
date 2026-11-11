@@ -23,6 +23,9 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         d = X.copy()
+        for column in ZERO_AS_MISSING:
+            if column in d:
+                d[column] = d[column].replace(0, np.nan)
         if self.enabled:
             d["age_band"] = pd.cut(d.age, [20, 30, 40, 50, 60, 100], labels=["21-30", "31-40", "41-50", "51-60", "61+"]).astype(object)
             d["glucose_age"] = d.glucose * d.age
@@ -37,12 +40,16 @@ def clean_data(raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         raise ValueError("Unexpected PIMA schema")
     d = raw.copy()
     audit = {"raw_rows": len(d), "duplicate_rows": int(d.duplicated().sum())}
-    d = d.drop_duplicates().reset_index(drop=True)
     for c in COLUMNS:
         d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d.replace([np.inf, -np.inf], np.nan)
+    audit["duplicate_rows"] = int(d.duplicated().sum())
+    d = d.drop_duplicates().reset_index(drop=True)
     audit["invalid_zero_counts"] = {c: int((d[c] == 0).sum()) for c in ZERO_AS_MISSING}
     d[ZERO_AS_MISSING] = d[ZERO_AS_MISSING].replace(0, np.nan)
     valid = d.outcome.isin([0, 1]) & d.pregnancies.ge(0) & d.age.between(21, 100)
+    valid &= d.pregnancies.mod(1).eq(0) & d.age.mod(1).eq(0)
+    valid &= ~d[CLASS_FEATURES].lt(0).any(axis=1)
     audit["invalid_rows_removed"] = int((~valid).sum())
     d = d.loc[valid].reset_index(drop=True)
     return d, audit

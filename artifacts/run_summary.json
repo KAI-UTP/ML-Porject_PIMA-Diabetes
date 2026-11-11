@@ -26,7 +26,7 @@
   },
   "ann_best_epoch": 97,
   "ann_epochs_run": 112,
-  "duration_seconds": 24.5,
+  "duration_seconds": 27.7,
   "versions": {
     "python": "3.13.3",
     "sklearn": "1.9.1",

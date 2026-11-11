@@ -12,7 +12,7 @@ from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier, Rando
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn.dummy import DummyClassifier, DummyRegressor
-from sklearn.model_selection import GridSearchCV, StratifiedKFold, KFold
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, KFold, cross_val_score
 from sklearn.metrics import *
 from sklearn.inspection import permutation_importance
 from data_pipeline import ROOT, SEED, CLASS_FEATURES, REG_FEATURES, FeatureEngineer, prepare_data
@@ -75,6 +75,15 @@ def run():
     start=time.time(); out=ROOT/"artifacts"; out.mkdir(exist_ok=True)
     if not (ROOT/"data/processed/cohort.csv").exists(): prepare_data()
     d=pd.read_csv(ROOT/"data/processed/cohort.csv"); parts={s:d[d.split==s].reset_index(drop=True) for s in ["train","validation","test"]}; tr,va,te=parts.values()
+    # Outlier fences are estimated from training data; unusual records are retained.
+    outliers=[]
+    for feature in CLASS_FEATURES:
+        q1,q3=tr[feature].quantile([.25,.75]); iqr=q3-q1
+        low,high=q1-1.5*iqr,q3+1.5*iqr
+        for split,frame in parts.items():
+            observed=frame[feature].dropna()
+            outliers.append(dict(feature=feature,split=split,lower=low,upper=high,flagged=int(((observed<low)|(observed>high)).sum()),observed=len(observed)))
+    pd.DataFrame(outliers).to_csv(out/"outlier_audit.csv",index=False)
     cv=StratifiedKFold(5,shuffle=True,random_state=SEED); rows=[]; preds=[]; models={}; tuning=[]
     specs={
       "Prevalence baseline":(False,True,False,DummyClassifier(strategy="prior"),{}),
@@ -97,9 +106,26 @@ def run():
     for split,f in parts.items():
         pr=ann_prob(prep,ann,f[CLASS_FEATURES]); rows.append({"model":"PyTorch ANN","split":split,**cmetrics(f.outcome,pr)}); preds.append(pd.DataFrame({"record_id":f.record_id,"model":"PyTorch ANN","split":split,"actual":f.outcome,"probability":pr}))
     cm=pd.DataFrame(rows); cp=pd.concat(preds); winner=cm[(cm.split=="validation")&(cm.model!="Prevalence baseline")].sort_values("roc_auc",ascending=False).iloc[0].model
+    ablations=[]
+    for label,eng,scaled,selected in [("Raw",False,False,False),("Scaled",False,True,False),("Engineered",True,True,False),("Selected",True,True,True)]:
+        estimator=Pipeline(preprocessing("classification",eng,scaled,selected)+[("model",LogisticRegression(C=1,max_iter=3000))])
+        scores=cross_val_score(estimator,tr[CLASS_FEATURES],tr.outcome,cv=cv,scoring="roc_auc")
+        estimator.fit(tr[CLASS_FEATURES],tr.outcome)
+        for split,frame in [("train",tr),("validation",va)]:
+            ablations.append(dict(variant=label,split=split,roc_auc=roc_auc_score(frame.outcome,estimator.predict_proba(frame[CLASS_FEATURES])[:,1]),cv_mean=scores.mean(),cv_std=scores.std()))
+    pd.DataFrame(ablations).to_csv(out/"preprocessing_ablation.csv",index=False)
+    selected_pipe=models["Logistic / selected"]
+    feature_names=selected_pipe.named_steps["prepare"].get_feature_names_out()
+    selection=selected_pipe.named_steps["select"]
+    pd.DataFrame(dict(feature=feature_names,selected=selection.get_support(),importance=selection.estimator_.feature_importances_)).to_csv(out/"selected_features.csv",index=False)
     vp=cp[(cp.split=="validation")&(cp.model==winner)]; precision,recall,thresholds=precision_recall_curve(vp.actual,vp.probability); fs=2*precision[:-1]*recall[:-1]/np.maximum(precision[:-1]+recall[:-1],1e-12); threshold=float(thresholds[np.argmax(fs)])
     tp=cp[(cp.split=="test")&(cp.model==winner)]; selected_test=cmetrics(tp.actual,tp.probability,threshold)
     cm.to_csv(out/"classification_metrics.csv",index=False); cp.to_csv(out/"classification_predictions.csv",index=False); pd.DataFrame(history).to_csv(out/"ann_history.csv",index=False)
+    operating=[]
+    for (model,split),frame in cp.groupby(["model","split"]):
+        cutoff=threshold if model==winner else .5
+        operating.append(dict(model=model,split=split,**cmetrics(frame.actual,frame.probability,cutoff)))
+    pd.DataFrame(operating).to_csv(out/"operating_metrics.csv",index=False)
     joblib.dump(models,out/"classifiers.joblib"); joblib.dump(prep,out/"ann_preprocessor.joblib"); torch.save({"input_dim":ann[0].in_features,"state_dict":ann.state_dict()},out/"ann.pt")
     imp=permutation_importance(models["Random forest"],va[CLASS_FEATURES],va.outcome,n_repeats=20,random_state=SEED,scoring="roc_auc"); pd.DataFrame({"feature":CLASS_FEATURES,"importance":imp.importances_mean,"std":imp.importances_std}).sort_values("importance",ascending=False).to_csv(out/"permutation_importance.csv",index=False)
     curves=[]
