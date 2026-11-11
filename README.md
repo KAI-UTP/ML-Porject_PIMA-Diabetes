@@ -10,6 +10,16 @@ This project rebuilds the coursework around the PIMA dataset used in Labs 1 and 
 
 Then open http://127.0.0.1:8502.
 
+## Deploy on Streamlit Community Cloud
+
+1. Open https://share.streamlit.io and connect the GitHub account with repository access.
+2. Create an app and select `KAI-UTP/ML-Porject_PIMA-Diabetes`.
+3. Use branch `main` and entrypoint `app.py`.
+4. In Advanced settings, select Python 3.13. No secrets are required.
+5. Deploy and wait for the dependency installation and health check.
+
+The root `requirements.txt` contains only the pinned app runtime dependencies. Community Cloud redeploys after future pushes to `main`.
+
 ## Reproduce
 
 ```powershell
