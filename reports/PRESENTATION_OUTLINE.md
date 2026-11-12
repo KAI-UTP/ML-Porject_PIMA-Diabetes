@@ -1,8 +1,9 @@
-# Presentation outline
+# Presentation Outline (one part per member)
 
-1. Problem, dataset, and CRISP-DM.
-2. Invalid zeros, missing values, and leakage prevention.
-3. Feature engineering and embedded selection.
-4. Classification, BMI regression, and ANN architectures.
-5. Results: Logistic / raw test ROC-AUC 0.793; Random forest regressor BMI RMSE 5.401.
-6. Bias–variance evidence, limitations, and Streamlit demonstration.
+1. **Problem and data** – diabetes screening, CRISP-DM, 768 patients, class imbalance, impossible zeros.
+2. **Data preparation** – zeros → missing, median imputation + indicators, scaling, outliers kept, 80/20 split, no leakage.
+3. **Feature engineering and selection** – log, interaction, binning; filter vs wrapper vs embedded; ablation results.
+4. **Models** – six classifiers, PyTorch ANN (32-16, dropout, early stopping), BMI regression.
+5. **Results** – SVM (RBF) CV ROC-AUC 0.847, test 0.827; recall 78% at the tuned threshold; Lasso BMI RMSE.
+6. **Bias–variance and discussion** – depth curve, learning curves, train–CV gaps, the four discussion questions.
+7. **Live demo** – Streamlit dashboard and prediction lab.

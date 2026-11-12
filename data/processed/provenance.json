@@ -4,8 +4,7 @@
   "seed": 42,
   "rows": 768,
   "split_counts": {
-    "train": 460,
-    "validation": 154,
+    "train": 614,
     "test": 154
   },
   "class_counts": {
@@ -15,7 +14,7 @@
   "audit": {
     "raw_rows": 768,
     "duplicate_rows": 0,
-    "invalid_zero_counts": {
+    "zero_as_missing": {
       "glucose": 5,
       "blood_pressure": 35,
       "skin_thickness": 227,
@@ -23,7 +22,5 @@
       "bmi": 11
     },
     "invalid_rows_removed": 0
-  },
-  "classification_target": "Outcome: diabetes test result (0/1)",
-  "regression_target": "BMI, using only rows where BMI was recorded and excluding BMI-derived predictors"
+  }
 }

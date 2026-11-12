@@ -1,244 +1,438 @@
-import json, textwrap, joblib, numpy as np, pandas as pd, plotly.express as px, plotly.graph_objects as go, streamlit as st
-from sklearn.metrics import confusion_matrix, roc_curve, precision_recall_curve
+"""Streamlit dashboard for the PIMA diabetes project. Run `python train.py` first."""
+import json
+
+import joblib
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
 from sklearn.calibration import calibration_curve
-from data_pipeline import ROOT, CLASS_FEATURES, REG_FEATURES, ZERO_AS_MISSING
+from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
 
-st.set_page_config(page_title="PIMA Diabetes ML", page_icon="◈", layout="wide")
-st.markdown("""<style>.block-container{max-width:1400px;padding-top:2rem}.hero{padding:30px 36px;border-radius:20px;background:linear-gradient(120deg,#2A174B,#7147B8);color:white}.hero h1{color:white}[data-testid=stMetric]{background:white;border:1px solid #e2dced;border-radius:14px;padding:15px}</style>""", unsafe_allow_html=True)
-px.defaults.template="plotly_white"; px.defaults.color_discrete_sequence=["#7147B8","#E1785C","#3B8C88","#CF9A36"]
+from data_pipeline import FEATURES, ROOT, UNITS, ZERO_AS_MISSING
 
-@st.cache_data(ttl=15)
-def load_data():
-    d=pd.read_csv(ROOT/"data/processed/cohort.csv")
-    meta=json.loads((ROOT/"data/processed/provenance.json").read_text())
-    summary=json.loads((ROOT/"artifacts/run_summary.json").read_text())
-    return d,meta,summary
+A = ROOT / "artifacts"
+PURPLE, ORANGE, TEAL, GREY, LIGHT = "#7147B8", "#E1785C", "#3B8C88", "#A9A0B5", "#E8E2EF"
+OUTCOME = {0: "No diabetes", 1: "Diabetes"}
+label = lambda name: name.replace("_", " ").capitalize()
 
-@st.cache_data(ttl=15)
-def table(name): return pd.read_csv(ROOT/"artifacts"/name)
+st.set_page_config(page_title="PIMA Diabetes ML", page_icon="🩺", layout="wide")
+st.markdown("""<style>
+.block-container{max-width:1350px;padding-top:2rem}
+.hero{padding:28px 34px;border-radius:18px;background:linear-gradient(120deg,#2A174B,#7147B8);color:#fff;margin-bottom:1rem}
+.hero h1{color:#fff;margin:0 0 .3rem}.hero p{margin:0;opacity:.9}
+.step{background:#fff;border:1px solid #e2dced;border-radius:12px;padding:12px 14px;height:100%}
+.step b{color:#7147B8}
+</style>""", unsafe_allow_html=True)
+px.defaults.template = "plotly_white"
+px.defaults.color_discrete_sequence = [PURPLE, ORANGE, TEAL, "#CF9A36", "#5B8DEF", "#C05780", GREY]
 
-@st.cache_resource(ttl=60)
-def classifiers(): return joblib.load(ROOT/"artifacts/classifiers.joblib")
 
-@st.cache_resource(ttl=60)
-def ann_model():
-    import torch
-    from train import make_network
-    obj=torch.load(ROOT/"artifacts/ann.pt",map_location="cpu",weights_only=True)
-    m=make_network(obj["input_dim"]);m.load_state_dict(obj["state_dict"]);m.eval()
-    return joblib.load(ROOT/"artifacts/ann_preprocessor.joblib"),m
+# ---------------------------------------------------------------- Data loading
 
-def clean_profile(frame):
-    x=frame.copy()
-    x[ZERO_AS_MISSING]=x[ZERO_AS_MISSING].replace(0,np.nan)
-    return x
+@st.cache_data
+def table(name):
+    return pd.read_csv(A / name)
 
-def predict_probability(name,frame):
-    x=clean_profile(frame)
-    if name=="PyTorch ANN":
-        from train import ann_prob
-        prep,model=ann_model()
-        return np.asarray(ann_prob(prep,model,x),dtype=float)
-    return classifiers()[name].predict_proba(x)[:,1]
 
-def chart(fig):
-    title=fig.layout.title.text or ""
-    lines=textwrap.wrap(title,width=48)
-    fig.update_layout(title_text="<br>".join(lines),margin=dict(l=15,r=35,t=40+22*len(lines),b=15),font=dict(family="Arial",color="#221A35"),paper_bgcolor="rgba(0,0,0,0)")
-    if fig.layout.legend.title.text=="model":
-        fig.update_layout(showlegend=False)
-    fig.update_layout(legend=dict(orientation="h",yanchor="top",y=-.25,x=0),margin_b=100)
-    fig.update_traces(cliponaxis=False,selector=dict(type="bar"))
-    fig.update_yaxes(automargin=True)
-    st.plotly_chart(fig,width="stretch")
+@st.cache_data
+def load_core():
+    cohort = pd.read_csv(ROOT / "data/processed/cohort.csv")
+    meta = json.loads((ROOT / "data/processed/provenance.json").read_text())
+    summary = json.loads((A / "run_summary.json").read_text())
+    return cohort, meta, summary
 
-if not (ROOT/"artifacts/run_summary.json").exists():
-    st.info("Run data_pipeline.py and train.py first.");st.stop()
-d,meta,summary=load_data()
-st.sidebar.title("◈ PIMA Diabetes")
-page=st.sidebar.radio("Workspace",["Overview","Data explorer","Model evaluation","Feature experiments","Prediction lab","Methodology"])
-st.sidebar.caption("Lab 1 and Lab 3 dataset · 768 records")
-st.sidebar.info("Coursework demonstration. Not for clinical diagnosis.")
 
-if page=="Overview":
-    st.markdown('<div class="hero"><h1>PIMA Diabetes Machine Learning</h1><p>Classification, BMI regression, neural network, and interactive evaluation.</p></div>',unsafe_allow_html=True)
-    a,b,c,e=st.columns(4);a.metric("Records",len(d));b.metric("Positive outcomes",int(d.outcome.sum()));c.metric("Positive rate",f"{d.outcome.mean():.1%}");e.metric("Classification inputs",len(CLASS_FEATURES))
-    m=table("operating_metrics.csv");best=m[(m.model==summary["winner"])&(m.split=="test")].iloc[0]
-    st.subheader("Measured result");a,b,c=st.columns(3);a.metric("Selected model",summary["winner"]);b.metric("Test ROC-AUC",f"{best.roc_auc:.3f}");c.metric("Test recall",f"{best.recall:.3f}")
-    st.caption(f"Recall uses the validation-selected cutoff {best.threshold:.3f}. ROC-AUC measures ranking across cutoffs.")
-    left,right=st.columns(2)
-    with left: chart(px.histogram(d,x="glucose",color=d.outcome.map({0:"Negative",1:"Positive"}),nbins=25,title="Glucose distribution"))
-    with right: chart(px.scatter(d,x="bmi",y="glucose",color=d.outcome.map({0:"Negative",1:"Positive"}),title="BMI and glucose"))
+@st.cache_resource
+def classifiers():
+    return joblib.load(A / "classifiers.joblib")
 
-elif page=="Data explorer":
+
+def show(fig, height=None):
+    fig.update_layout(margin=dict(l=10, r=20, t=50, b=10), height=height,
+                      legend=dict(orientation="h", yanchor="top", y=-0.18, x=0, title=None))
+    st.plotly_chart(fig, width="stretch")
+
+
+def live_metrics(y, p, threshold):
+    tn, fp, fn, tp = confusion_matrix(y, p >= threshold, labels=[0, 1]).ravel()
+    return {"Accuracy": (tp + tn) / len(y), "Recall": tp / max(tp + fn, 1), "Precision": tp / max(tp + fp, 1),
+            "Specificity": tn / max(tn + fp, 1), "F1": 2 * tp / max(2 * tp + fp + fn, 1)}
+
+
+if not (A / "run_summary.json").exists():
+    st.info("No results yet. Run `python train.py` first.")
+    st.stop()
+cohort, meta, summary = load_core()
+cls_summary = table("classification_summary.csv")
+WINNER = summary["winner"]
+thresholds = cls_summary.set_index("model").threshold.to_dict()
+
+
+# ---------------------------------------------------------------- Pages
+
+def page_overview():
+    best = cls_summary.set_index("model").loc[WINNER]
+    t = summary["test_metrics"]
+    st.markdown('<div class="hero"><h1>Diabetes Prediction · PIMA Indians</h1>'
+                "<p>CRISP-DM pipeline: data cleaning, feature engineering and selection, six classifiers, "
+                "a PyTorch neural network and BMI regression, with bias–variance analysis.</p></div>",
+                unsafe_allow_html=True)
+    c = st.columns(4)
+    c[0].metric("Patients", meta["rows"], border=True)
+    c[1].metric("With diabetes", f"{meta['class_counts']['1']} ({meta['class_counts']['1'] / meta['rows']:.0%})", border=True)
+    c[2].metric("Train / test", f"{meta['split_counts']['train']} / {meta['split_counts']['test']}", border=True)
+    c[3].metric("Missing insulin", f"{meta['audit']['zero_as_missing']['insulin'] / meta['rows']:.0%}", border=True)
+
+    st.subheader("Best model")
+    c = st.columns(4)
+    c[0].metric("Model (highest CV ROC-AUC)", WINNER, border=True)
+    c[1].metric("Test ROC-AUC", f"{best.test_roc_auc:.3f}", f"95% CI {best.test_auc_ci_low:.2f}–{best.test_auc_ci_high:.2f}",
+                delta_color="off", delta_arrow="off", border=True)
+    c[2].metric("Test recall", f"{t['recall']:.0%}", f"threshold {t['threshold']:.2f}", delta_color="off", delta_arrow="off", border=True)
+    c[3].metric("Test accuracy", f"{t['accuracy']:.1%}", f"{summary['test_accuracy_at_0.5']:.1%} at 0.5", delta_color="off", delta_arrow="off", border=True)
+
+    st.subheader("Pipeline")
+    steps = [("1 · Clean", "Impossible zeros → missing; types, duplicates and ranges checked"),
+             ("2 · Split", "Stratified 80/20; test set used once at the end"),
+             ("3 · Prepare", "Median imputation + missing flags, scaling, one-hot encoding"),
+             ("4 · Engineer", "Log transform, glucose × BMI, age and BMI bins"),
+             ("5 · Select", "Mutual information vs RFE vs LASSO"),
+             ("6 · Model", "Grid search with 5-fold CV; F1 threshold from out-of-fold predictions")]
+    for col, (title, text) in zip(st.columns(len(steps)), steps):
+        col.markdown(f'<div class="step"><b>{title}</b><br><small>{text}</small></div>', unsafe_allow_html=True)
+
+    st.subheader("All classifiers")
+    c = cls_summary[~cls_summary.model.str.startswith("Baseline")].sort_values("cv_roc_auc")
+    fig = go.Figure()
+    fig.add_bar(y=c.model, x=c.cv_roc_auc, orientation="h", name="CV ROC-AUC (mean ± std)",
+                error_x=dict(array=c.cv_roc_auc_std), marker_color=[PURPLE if m == WINNER else GREY for m in c.model])
+    fig.add_scatter(y=c.model, x=c.test_roc_auc, mode="markers", name="Test ROC-AUC",
+                    marker=dict(symbol="diamond", size=12, color=ORANGE))
+    fig.update_xaxes(range=[0.6, 0.95], title="ROC-AUC")
+    show(fig, 380)
+    st.caption("Differences between the top models are smaller than the CV standard deviation: SVM, logistic "
+               "regression and the ANN perform equally well. Logistic regression is the most interpretable.")
+
+
+def page_data():
     st.title("Data explorer")
-    a,b=st.columns(2);split=a.multiselect("Split",["train","validation","test"],default=["train"]);outcome=b.multiselect("Outcome",[0,1],default=[0,1])
-    f=d[d.split.isin(split)&d.outcome.isin(outcome)]
-    if f.empty: st.info("No matching rows.");st.stop()
-    missing=pd.DataFrame({"feature":CLASS_FEATURES,"missing_pct":[100*f[c].isna().mean() for c in CLASS_FEATURES]})
-    a,b=st.columns(2)
-    with a: chart(px.bar(missing,x="missing_pct",y="feature",orientation="h",title="Missing after invalid zeros are removed"))
-    with b: chart(px.box(f,x="outcome",y="age",color="outcome",title="Age by outcome"))
-    st.dataframe(f.head(200),width="stretch",hide_index=True)
-    with st.expander("Cleaning audit"): st.json(meta)
-    with st.expander("Outlier detection"):
-        audit=table("outlier_audit.csv")
-        st.dataframe(audit[audit.split.isin(split)],hide_index=True,width="stretch")
-        st.caption("Training-only 1.5 × IQR fences flag unusual measurements. Records are retained because statistical extremes are not necessarily errors.")
-    with st.expander("Feature correlations"):
-        chart(px.imshow(f[CLASS_FEATURES].corr(),zmin=-1,zmax=1,color_continuous_scale="RdBu_r",title="Pearson correlation · available pairs"))
+    a, b = st.columns(2)
+    splits = a.multiselect("Split", ["train", "test"], default=["train", "test"])
+    outcomes = b.multiselect("Outcome", [0, 1], default=[0, 1], format_func=OUTCOME.get)
+    d = cohort[cohort.split.isin(splits) & cohort.outcome.isin(outcomes)]
+    if d.empty:
+        st.info("No rows match the filters.")
+        return
+    d = d.assign(Outcome=d.outcome.map(OUTCOME))
 
-elif page=="Model evaluation":
+    feature = st.selectbox("Feature", FEATURES, index=1, format_func=label)
+    a, b = st.columns(2)
+    with a:
+        show(px.histogram(d, x=feature, color="Outcome", nbins=30, barmode="overlay", opacity=0.7,
+                          title=f"{label(feature)} ({UNITS[feature]}) by outcome"))
+    with b:
+        show(px.box(d, x="Outcome", y=feature, color="Outcome", points="outliers",
+                    title=f"{label(feature)}: spread and outliers"))
+
+    a, b = st.columns(2)
+    with a:
+        missing = pd.DataFrame({"feature": [label(c) for c in ZERO_AS_MISSING],
+                                "missing %": [100 * d[c].isna().mean() for c in ZERO_AS_MISSING]}).sort_values("missing %")
+        show(px.bar(missing, x="missing %", y="feature", orientation="h", text_auto=".1f",
+                    title="Missing values (impossible zeros)"))
+    with b:
+        show(px.imshow(d[FEATURES + ["outcome"]].corr().round(2), text_auto=True, zmin=-1, zmax=1,
+                       color_continuous_scale="RdBu_r", title="Correlation"))
+
+    with st.expander("Outlier audit (1.5 × IQR fences from the training split)"):
+        st.dataframe(table("outlier_audit.csv"), hide_index=True, width="stretch")
+        st.caption("Outliers are flagged but kept: they are rare but medically plausible values.")
+    with st.expander("Cleaning audit"):
+        st.json(meta["audit"])
+    with st.expander(f"Rows ({len(d)})"):
+        st.dataframe(d.drop(columns="Outcome"), hide_index=True, width="stretch")
+
+
+def page_features():
+    st.title("Feature engineering & selection")
+    st.markdown("""
+| Technique | New feature | Why |
+|---|---|---|
+| Log transform | `log_insulin`, `log_pedigree` | Reduce strong right skew |
+| Interaction | `glucose_x_bmi` | High glucose is more serious with high BMI |
+| Binning | `age_band`, `bmi_class` (WHO) | Diabetes rate rises across age and BMI groups |
+| Missing indicators | `missingindicator_*` | "Not measured" can itself carry information |
+""")
+    ab = table("feature_ablation.csv")
+    fig = px.scatter(ab, x="cv_roc_auc", y="variant", color="model", error_x="cv_std",
+                     title="Impact of each preparation step (5-fold CV × 3 repeats, training split)",
+                     labels={"cv_roc_auc": "CV ROC-AUC", "variant": ""})
+    fig.update_traces(marker_size=11)
+    fig.update_yaxes(autorange="reversed")
+    show(fig, 480)
+    st.caption(f"Zeros → missing gives the clearest gain for logistic regression; scaling does not change the "
+               f"random forest (trees are scale-invariant). Selection method used in the final models: "
+               f"**{summary['selector']}** (offered as a tuned option to every classifier).")
+
+    sel = table("feature_selection.csv")
+    a, b = st.columns([3, 2])
+    with a:
+        metric = st.radio("Score", ["mutual_information", "rf_importance", "lasso_coefficient"], horizontal=True,
+                          format_func=lambda m: {"mutual_information": "Mutual information (filter)",
+                                                 "rf_importance": "Random-forest importance",
+                                                 "lasso_coefficient": "LASSO coefficient (embedded)"}[m])
+        s = sel.sort_values(metric)
+        show(px.bar(s, x=metric, y="feature", orientation="h", title="Feature scores", labels={metric: "", "feature": ""}), 620)
+    with b:
+        kept = sel.set_index("feature")[["Mutual information (filter)", "RFE (wrapper)", "LASSO L1 (embedded)"]]
+        st.markdown("**Features kept by each method**")
+        st.dataframe(kept.replace({True: "✅", False: ""}), width="stretch", height=620)
+
+    imp = table("permutation_importance.csv").sort_values("importance")
+    show(px.bar(imp, x="importance", y="feature", orientation="h", error_x="std",
+                title=f"{WINNER}: drop in test ROC-AUC when one input is shuffled (permutation importance)"), 360)
+
+
+def page_evaluation():
     st.title("Model evaluation")
-    task=st.radio("Task",["Diabetes classification","BMI regression"],horizontal=True);split=st.radio("Split",["validation","test"],horizontal=True)
-    if task=="Diabetes classification":
-        policy=st.radio("Decision policy",["Saved operating cutoffs","Common cutoff 0.50"],horizontal=True)
-        m=table("operating_metrics.csv" if policy=="Saved operating cutoffs" else "classification_metrics.csv");m=m[m.split==split];metric=st.selectbox("Metric",["roc_auc","average_precision","recall","precision","f1","accuracy","brier"])
-        st.caption("Lower Brier score is better; higher is better for the other metrics. Only the selected model has a validation-tuned cutoff.")
-        chart(px.bar(m.sort_values(metric),x=metric,y="model",orientation="h",color="model",title=f"{split.title()} model comparison"));st.dataframe(m.round(4),width="stretch",hide_index=True)
-        name=st.selectbox("Inspect model",m.model.tolist(),index=m.model.tolist().index(summary["winner"]));p=table("classification_predictions.csv");p=p[(p.split==split)&(p.model==name)]
-        threshold=float(m[m.model==name].iloc[0].threshold);cm=confusion_matrix(p.actual,p.probability>=threshold,labels=[0,1])
-        a,b=st.columns(2)
-        with a: chart(px.imshow(cm,text_auto=True,x=["Negative","Positive"],y=["Negative","Positive"],labels={"x":"Predicted","y":"Actual"},title=f"Confusion matrix · threshold {threshold:.2f}"))
-        with b:
-            fpr,tpr,_=roc_curve(p.actual,p.probability);fig=go.Figure(go.Scatter(x=fpr,y=tpr,name=name));fig.add_scatter(x=[0,1],y=[0,1],line=dict(dash="dash"),name="Chance");fig.update_layout(title="ROC curve",xaxis_title="False-positive rate",yaxis_title="Recall");chart(fig)
-        a,b=st.columns(2)
-        with a:
-            precision,recall,_=precision_recall_curve(p.actual,p.probability)
-            fig=go.Figure(go.Scatter(x=recall,y=precision,name=name))
-            fig.add_hline(y=float(p.actual.mean()),line_dash="dash")
-            fig.update_layout(title="Precision–recall",xaxis_title="Recall",yaxis_title="Precision");chart(fig)
-        with b:
-            observed,predicted=calibration_curve(p.actual,p.probability,n_bins=6,strategy="quantile")
-            fig=go.Figure(go.Scatter(x=predicted,y=observed,mode="lines+markers",name=name))
-            fig.add_scatter(x=[0,1],y=[0,1],line=dict(dash="dash"),name="Perfect calibration")
-            fig.update_layout(title="Reliability diagram",xaxis_title="Mean predicted probability",yaxis_title="Observed positive rate",xaxis_range=[0,1],yaxis_range=[0,1]);chart(fig)
-        st.caption("Reliability bins are descriptive and noisy on this small sample. Models have not been calibrated for clinical use.")
-    else:
-        m=table("regression_metrics.csv");m=m[m.split==split];chart(px.bar(m,x="model",y="rmse",color="model",title="BMI prediction RMSE"));st.dataframe(m.round(4),width="stretch",hide_index=True)
-        name=st.selectbox("Inspect regressor",m.model.tolist());p=table("regression_predictions.csv");p=p[(p.split==split)&(p.model==name)]
-        fig=px.scatter(p,x="actual",y="predicted",title="Observed vs predicted BMI")
-        limits=[float(p[["actual","predicted"]].min().min()),float(p[["actual","predicted"]].max().max())]
-        fig.add_scatter(x=limits,y=limits,mode="lines",line=dict(dash="dash"),name="Perfect prediction");chart(fig)
-        fig=px.scatter(p,x="predicted",y="residual",title="BMI residuals",labels={"residual":"Observed − predicted BMI"});fig.add_hline(y=0,line_dash="dash");chart(fig)
+    task = st.radio("Task", ["Diabetes classification", "BMI regression"], horizontal=True)
+    if task == "BMI regression":
+        return regression_view()
 
-elif page=="Feature experiments":
-    st.title("Feature experiments")
-    tab=st.radio("View",["Preprocessing","Learning curves","Neural network"],horizontal=True)
-    if tab=="Preprocessing":
-        f=table("preprocessing_ablation.csv");chart(px.bar(f,x="variant",y="roc_auc",color="split",barmode="group",title="Controlled preprocessing comparison · fixed C = 1"))
-        st.dataframe(f[f.split=="validation"][["variant","roc_auc","cv_mean","cv_std"]],hide_index=True,width="stretch")
-        st.dataframe(table("selected_features.csv"),hide_index=True,width="stretch")
-        chart(px.bar(table("permutation_importance.csv").sort_values("importance"),x="importance",y="feature",error_x="std",orientation="h",title="Random forest · validation permutation importance"))
-    elif tab=="Learning curves":
-        c=table("learning_curves.csv");chart(px.line(c,x="n_train",y="roc_auc",color="model",line_dash="split",markers=True,title="Training-size learning curves"))
-    else:
-        h=table("ann_history.csv");a,b=st.columns(2)
-        with a: chart(px.line(h,x="epoch",y=["train_loss","validation_loss"],title="ANN loss"))
-        with b: chart(px.line(h,x="epoch",y=["train_accuracy","validation_accuracy"],title="ANN accuracy"))
-        st.caption(f"32 → 16 → 1 network; best epoch {summary['ann_best_epoch']}.")
+    view = cls_summary.copy()
+    view["best_params"] = view.best_params.str.replace(r'[{}"]', "", regex=True)
+    st.dataframe(view[["model", "cv_roc_auc", "cv_roc_auc_std", "train_roc_auc", "test_roc_auc", "test_auc_ci_low",
+                       "test_auc_ci_high", "threshold", "best_params"]].round(3),
+                 hide_index=True, width="stretch",
+                 column_config={"cv_roc_auc": "CV ROC-AUC", "cv_roc_auc_std": "CV std", "train_roc_auc": "Train ROC-AUC",
+                                "test_roc_auc": "Test ROC-AUC", "test_auc_ci_low": "Test CI low",
+                                "test_auc_ci_high": "Test CI high", "threshold": "Tuned threshold",
+                                "best_params": "Best hyper-parameters"})
 
-elif page=="Prediction lab":
-    st.title("Prediction lab");st.warning("Educational model output, not a diagnosis.")
-    st.caption("Training population: women of Pima heritage aged 21+. Glucose: mg/dL; diastolic pressure: mm Hg; skinfold: mm; insulin: µU/mL; BMI: kg/m². Zero clinical measurements are treated as missing.")
-    names=[n for n in classifiers() if n!="Prevalence baseline"]+["PyTorch ANN"];name=st.selectbox("Model",names,index=names.index(summary["winner"]))
+    st.subheader("Inspect a model")
+    a, b, c = st.columns([2, 1, 2])
+    models = cls_summary.model.tolist()
+    name = a.selectbox("Model", models, index=models.index(WINNER))
+    split = b.radio("Data", ["test", "cv"], format_func={"test": "Test set", "cv": "CV (out-of-fold)"}.get)
+    threshold = c.slider("Decision threshold", 0.05, 0.95, float(thresholds[name]), 0.0001, format="%.3f",
+                         help="Default is the threshold that maximised F1 on out-of-fold predictions.")
+    preds = table("classification_predictions.csv")
+    p = preds[(preds.model == name) & (preds.split == split)]
+
+    for col, (metric, value) in zip(st.columns(5), live_metrics(p.actual, p.probability, threshold).items()):
+        col.metric(metric, f"{value:.1%}", border=True)
+
+    a, b = st.columns(2)
+    with a:
+        cm = confusion_matrix(p.actual, p.probability >= threshold, labels=[0, 1])
+        show(px.imshow(cm, text_auto=True, color_continuous_scale="Purples", x=list(OUTCOME.values()), y=list(OUTCOME.values()),
+                       labels={"x": "Predicted", "y": "Actual"}, title=f"Confusion matrix · threshold {threshold:.2f}"))
+    with b:
+        fig = go.Figure()
+        for model in models:
+            q = preds[(preds.model == model) & (preds.split == split)]
+            fpr, tpr, _ = roc_curve(q.actual, q.probability)
+            fig.add_scatter(x=fpr, y=tpr, name=model, line=dict(width=4 if model == name else 1.5),
+                            opacity=1 if model == name else 0.45)
+        fig.add_scatter(x=[0, 1], y=[0, 1], line=dict(dash="dash", color="grey"), showlegend=False)
+        fig.update_layout(title="ROC curves", xaxis_title="False-positive rate", yaxis_title="Recall")
+        show(fig)
+
+    a, b = st.columns(2)
+    with a:
+        precision, recall, _ = precision_recall_curve(p.actual, p.probability)
+        fig = go.Figure(go.Scatter(x=recall, y=precision, name=name, line_color=PURPLE))
+        fig.add_hline(y=p.actual.mean(), line_dash="dash", annotation_text="baseline (prevalence)")
+        fig.update_layout(title="Precision–recall", xaxis_title="Recall", yaxis_title="Precision")
+        show(fig)
+    with b:
+        observed, predicted = calibration_curve(p.actual, p.probability, n_bins=6, strategy="quantile")
+        fig = go.Figure(go.Scatter(x=predicted, y=observed, mode="lines+markers", name=name, line_color=PURPLE))
+        fig.add_scatter(x=[0, 1], y=[0, 1], line=dict(dash="dash", color="grey"), name="Perfect calibration")
+        fig.update_layout(title="Calibration (reliability)", xaxis_title="Mean predicted probability",
+                          yaxis_title="Observed diabetes rate", xaxis_range=[0, 1], yaxis_range=[0, 1])
+        show(fig)
+
+
+def regression_view():
+    m = table("regression_metrics.csv")
+    st.caption("Target: BMI. Inputs: the other seven measurements and the diabetes outcome. Rows without BMI are excluded.")
+    pivot = m.pivot(index="model", columns="split", values=["rmse", "r2", "mae"])
+    pivot.columns = [f"{metric.upper()} ({split})" for metric, split in pivot.columns]
+    st.dataframe(pivot.sort_values("RMSE (cv)").round(3), width="stretch")
+    show(px.bar(m[m.split != "train"], x="model", y="rmse", color="split", barmode="group",
+                title="RMSE by model (lower is better)", labels={"rmse": "RMSE (kg/m²)", "model": ""}))
+
+    models = m.model.unique().tolist()
+    name = st.selectbox("Inspect regressor", models, index=models.index(summary["regression_winner"]))
+    p = table("regression_predictions.csv")
+    p = p[(p.model == name) & (p.split == "test")]
+    a, b = st.columns(2)
+    with a:
+        fig = px.scatter(p, x="actual", y="predicted", title="Actual vs predicted BMI (test)", opacity=0.7)
+        fig.add_scatter(x=[15, 60], y=[15, 60], mode="lines", line=dict(dash="dash", color="grey"), name="Perfect")
+        show(fig)
+    with b:
+        fig = px.scatter(p.assign(residual=p.actual - p.predicted), x="predicted", y="residual",
+                         title="Residuals (test)", opacity=0.7)
+        fig.add_hline(y=0, line_dash="dash")
+        show(fig)
+
+
+def page_bias_variance():
+    st.title("Bias–variance analysis")
+    gap = cls_summary[~cls_summary.model.str.startswith("Baseline")].assign(gap=lambda f: f.train_roc_auc - f.cv_roc_auc)
+    a, b = st.columns(2)
+    with a:
+        fig = go.Figure()
+        fig.add_bar(y=gap.model, x=gap.train_roc_auc, orientation="h", name="Train", marker_color=GREY)
+        fig.add_bar(y=gap.model, x=gap.cv_roc_auc, orientation="h", name="CV", marker_color=PURPLE)
+        fig.update_layout(title="Train vs CV ROC-AUC (gap = variance)", barmode="group", xaxis_range=[0.7, 1])
+        show(fig)
+    with b:
+        depth = table("depth_curve.csv")
+        fig = go.Figure()
+        fig.add_scatter(x=depth.max_depth, y=depth.train_roc_auc, name="Train", mode="lines+markers", line_color=GREY)
+        fig.add_scatter(x=depth.max_depth, y=depth.cv_roc_auc, name="CV", mode="lines+markers", line_color=PURPLE,
+                        error_y=dict(array=depth.cv_std))
+        best = depth.loc[depth.cv_roc_auc.idxmax()]
+        fig.add_vline(x=best.max_depth, line_dash="dash", annotation_text=f"best depth {int(best.max_depth)}")
+        fig.update_layout(title="Decision-tree depth: underfitting → overfitting", xaxis_title="max_depth",
+                          yaxis_title="ROC-AUC")
+        show(fig)
+
+    curves = table("learning_curves.csv")
+    fig = px.line(curves.melt(id_vars=["model", "n_train"], value_vars=["train_roc_auc", "cv_roc_auc"],
+                              var_name="set", value_name="ROC-AUC").replace({"train_roc_auc": "Train", "cv_roc_auc": "CV"}),
+                  x="n_train", y="ROC-AUC", color="set", facet_col="model", markers=True,
+                  title="Learning curves", labels={"n_train": "training rows"},
+                  color_discrete_map={"Train": GREY, "CV": PURPLE})
+    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+    show(fig, 360)
+
+    h = table("ann_history.csv")
+    a, b = st.columns(2)
+    for col, metric in [(a, "loss"), (b, "accuracy")]:
+        with col:
+            fig = px.line(h, x="epoch", y=[f"train_{metric}", f"validation_{metric}"], title=f"ANN {metric}",
+                          color_discrete_sequence=[GREY, PURPLE])
+            fig.add_vline(x=summary["ann_best_epoch"], line_dash="dash", annotation_text="early stop (best)")
+            show(fig)
+    st.markdown("""
+- **High variance:** deep trees and the random forest score much better on training data than in CV.
+- **Low variance:** logistic regression, SVM and the ANN have small gaps (≈0.02–0.03); their error is mostly bias and data noise.
+- **More data:** CV curves still rise slowly with training size, so more patients would help a little.
+- **ANN:** validation loss stops improving after a few dozen epochs; early stopping keeps the best weights.
+""")
+
+
+def page_prediction():
+    st.title("Prediction lab")
+    st.warning("Educational demo trained on 614 Pima women aged 21+. It is not a medical diagnosis.")
+    models = [m for m in cls_summary.model if not m.startswith("Baseline")]
+    name = st.selectbox("Model", models, index=models.index(WINNER))
+
     with st.form("patient"):
-        c1,c2,c3=st.columns(3)
-        values={"pregnancies":c1.number_input("Pregnancies",0,20,2),"glucose":c2.number_input("Glucose",0.0,250.0,120.0),"blood_pressure":c3.number_input("Blood pressure",0.0,150.0,70.0),"skin_thickness":c1.number_input("Skin thickness",0.0,100.0,25.0),"insulin":c2.number_input("Insulin",0.0,900.0,80.0),"bmi":c3.number_input("BMI",0.0,70.0,30.0),"diabetes_pedigree":c1.number_input("Diabetes pedigree",0.0,3.0,.5),"age":c2.number_input("Age",21,100,35)}
-        run_prediction=st.form_submit_button("Calculate model score",type="primary")
-    if run_prediction: st.session_state.prediction_ready=True
-    if st.session_state.get("prediction_ready"):
-        x=pd.DataFrame([values]);pr=float(predict_probability(name,x)[0]);threshold=float(summary["threshold"] if name==summary["winner"] else .5)
-        invalid=[c.replace("_"," ").title() for c in ZERO_AS_MISSING if values[c]==0]
-        if invalid: st.info("Treated as missing: "+", ".join(invalid))
-        reference=d.loc[d.split=="train",CLASS_FEATURES]
-        cleaned=clean_profile(x).iloc[0]
-        outside=[f.replace("_"," ") for f in CLASS_FEATURES if pd.notna(cleaned[f]) and not reference[f].min()<=cleaned[f]<=reference[f].max()]
-        if outside: st.warning("Outside the observed training range: "+", ".join(outside))
+        st.caption("Leave a field empty if it was not measured; the model imputes it like in training.")
+        c = st.columns(4)
+        values = {
+            "pregnancies": c[0].number_input("Pregnancies", 0, 20, 2),
+            "glucose": c[1].number_input("Glucose (mg/dL)", 40.0, 250.0, 120.0),
+            "blood_pressure": c[2].number_input("Diastolic blood pressure (mm Hg)", 20.0, 140.0, 70.0),
+            "skin_thickness": c[3].number_input("Skin thickness (mm)", 5.0, 100.0, None, placeholder="not measured"),
+            "insulin": c[0].number_input("Insulin (µU/mL)", 10.0, 900.0, None, placeholder="not measured"),
+            "bmi": c[1].number_input("BMI (kg/m²)", 15.0, 70.0, 30.0),
+            "diabetes_pedigree": c[2].number_input("Diabetes pedigree", 0.05, 2.5, 0.45),
+            "age": c[3].number_input("Age (years)", 21, 90, 35),
+        }
+        submitted = st.form_submit_button("Predict", type="primary")
+    if submitted:
+        st.session_state.patient_inputs = values
+    if "patient_inputs" not in st.session_state:
+        return
 
-        a,b,c=st.columns(3)
-        a.metric("Model score",f"{pr:.1%}",border=True)
-        b.metric("Decision cutoff",f"{threshold:.1%}",border=True)
-        c.metric("Model output","Above cutoff" if pr>=threshold else "Below cutoff",border=True)
+    x = pd.DataFrame([st.session_state.patient_inputs], dtype=float)
+    fitted = classifiers()
+    prob = lambda model, frame: fitted[model].predict_proba(frame)[:, 1]
+    p, threshold = float(prob(name, x)[0]), thresholds[name]
 
-        comparison_names=list(classifiers())+["PyTorch ANN"]
-        comparison=pd.DataFrame({"model":comparison_names,"score":[float(predict_probability(model,x)[0]) for model in comparison_names]})
-        metrics=table("classification_metrics.csv")
-        validation=metrics[metrics.split=="validation"].set_index("model")
-        test=metrics[metrics.split=="test"].set_index("model")
-        comparison["cutoff"]=comparison.model.map(lambda model:float(summary["threshold"] if model==summary["winner"] else .5))
-        comparison["output"]=np.where(comparison.score>=comparison.cutoff,"Above","Below")
-        comparison["validation_roc_auc"]=comparison.model.map(validation.roc_auc)
-        comparison["test_roc_auc"]=comparison.model.map(test.roc_auc)
+    a, b, c = st.columns(3)
+    a.metric("Predicted probability", f"{p:.1%}", border=True)
+    b.metric("Model threshold", f"{threshold:.1%}", border=True)
+    c.metric("Screening result", "Refer for test" if p >= threshold else "Low risk", border=True)
 
-        score_tab,compare_tab,context_tab,explain_tab,whatif_tab=st.tabs(["Score","Model comparison","Cohort context","Model sensitivity","What-if curve"])
-        with score_tab:
-            fig=go.Figure(go.Indicator(mode="gauge+number",value=100*pr,number={"suffix":"%","valueformat":".1f"},gauge={"axis":{"range":[0,100],"ticksuffix":"%"},"bar":{"color":"#7147B8"},"threshold":{"line":{"color":"#E1785C","width":4},"value":100*threshold}}))
-            fig.update_layout(title="Predicted probability and decision cutoff",height=330);chart(fig)
-            st.caption("The marker is the model's decision cutoff. It is not a medical diagnostic threshold.")
+    tab1, tab2, tab3 = st.tabs(["All models", "What-if", "Input sensitivity"])
+    with tab1:
+        comp = pd.DataFrame({"model": models, "probability": [float(prob(m, x)[0]) for m in models],
+                             "threshold": [thresholds[m] for m in models]}).sort_values("probability")
+        fig = go.Figure()
+        fig.add_bar(y=comp.model, x=comp.probability, orientation="h", text=comp.probability, texttemplate="%{text:.0%}",
+                    marker_color=[PURPLE if m == name else GREY for m in comp.model], name="Probability")
+        fig.add_scatter(y=comp.model, x=comp.threshold, mode="markers", name="Threshold",
+                        marker=dict(symbol="diamond", size=12, color=ORANGE))
+        fig.update_layout(title="Same patient, every model", xaxis_range=[0, 1], xaxis_tickformat=".0%")
+        show(fig)
+        test = table("classification_predictions.csv")
+        test = test[(test.model == name) & (test.split == "test")]
+        fig = px.histogram(test, x="probability", color=test.actual.map(OUTCOME), nbins=20, barmode="overlay",
+                           opacity=0.7, title="This patient among the 154 test patients")
+        fig.add_vline(x=p, line_width=3, line_color=PURPLE, annotation_text="this patient")
+        fig.add_vline(x=threshold, line_dash="dash", line_color=ORANGE, annotation_text="threshold")
+        show(fig)
+    with tab2:
+        feature = st.selectbox("Change one input", FEATURES, index=1, format_func=label)
+        train = cohort[cohort.split == "train"]
+        grid = np.linspace(*train[feature].quantile([0.02, 0.98]), 60)
+        scenarios = pd.concat([x] * len(grid), ignore_index=True).assign(**{feature: grid})
+        fig = px.line(x=grid, y=prob(name, scenarios), labels={"x": f"{label(feature)} ({UNITS[feature]})", "y": "Probability"},
+                      title=f"{name}: probability as only {label(feature).lower()} changes")
+        if pd.notna(x.loc[0, feature]):
+            fig.add_scatter(x=[x.loc[0, feature]], y=[p], mode="markers", marker=dict(size=13, color=ORANGE), name="This patient")
+        fig.add_hline(y=threshold, line_dash="dash", annotation_text="threshold")
+        fig.update_yaxes(range=[0, 1], tickformat=".0%")
+        show(fig)
+    with tab3:
+        medians = cohort[cohort.split == "train"][FEATURES].median()
+        rows = [{"feature": label(f), "change": p - float(prob(name, x.assign(**{f: medians[f]}))[0])} for f in FEATURES]
+        imp = pd.DataFrame(rows).sort_values("change")
+        fig = px.bar(imp, x="change", y="feature", orientation="h", color="change", color_continuous_midpoint=0,
+                     color_continuous_scale=[TEAL, LIGHT, ORANGE],
+                     title="How much each input moves the probability vs the training median")
+        fig.update_layout(coloraxis_showscale=False)
+        fig.update_xaxes(tickformat="+.0%")
+        show(fig)
+        st.caption("One input is replaced at a time. This shows model sensitivity, not medical cause.")
 
-        with compare_tab:
-            winner=summary["winner"];winner_val=float(validation.loc[winner,"roc_auc"]);winner_test=float(test.loc[winner,"roc_auc"])
-            a,b,c=st.columns(3)
-            a.metric("Best validated model",winner,border=True)
-            b.metric("Validation ROC-AUC",f"{winner_val:.3f}",border=True)
-            c.metric("Test ROC-AUC",f"{winner_test:.3f}",border=True)
 
-            ordered=comparison.sort_values("score")
-            colors=["#7147B8" if model==winner else "#A9A0B5" for model in ordered.model]
-            fig=go.Figure()
-            fig.add_bar(x=ordered.score,y=ordered.model,orientation="h",text=ordered.score,texttemplate="%{text:.1%}",textposition="outside",marker_color=colors,name="Patient score")
-            fig.add_scatter(x=ordered.cutoff,y=ordered.model,mode="markers",marker={"symbol":"diamond","size":11,"color":"#E1785C"},name="Decision cutoff")
-            fig.update_layout(title="Same patient scored by every model",xaxis_title="Predicted probability",yaxis_title="",xaxis_tickformat=".0%",xaxis_range=[0,1],barmode="overlay");chart(fig)
+def page_about():
+    st.title("About this project")
+    st.markdown(f"""
+**Dataset:** PIMA Indians Diabetes ({meta['rows']} women of Pima heritage aged 21+, 8 measurements, binary outcome), used in Labs 1 and 3.
 
-            leaderboard=metrics[metrics.split=="validation"].copy().sort_values("roc_auc")
-            leaderboard["status"]=np.where(leaderboard.model==winner,"Selected best","Other model")
-            fig=px.bar(leaderboard,x="roc_auc",y="model",orientation="h",color="status",text="roc_auc",color_discrete_map={"Selected best":"#7147B8","Other model":"#A9A0B5"},title="Validation ROC-AUC determines the best model",labels={"roc_auc":"Validation ROC-AUC","model":"","status":""})
-            fig.update_traces(texttemplate="%{text:.3f}",textposition="outside");fig.update_xaxes(range=[0,1]);chart(fig)
+**Method (CRISP-DM)**
+1. *Business understanding* – screening aid for diabetes; secondary BMI regression.
+2. *Data understanding* – class imbalance (35% positive), impossible zeros, skewed insulin and pedigree.
+3. *Data preparation* – zeros → missing, median imputation + indicators, scaling, one-hot encoding, IQR outlier audit (kept).
+4. *Features* – log transforms, glucose × BMI, age/BMI binning; filter vs wrapper vs embedded selection.
+5. *Modeling* – grid search with 5-fold stratified CV; F1-optimal threshold from out-of-fold predictions; PyTorch ANN with early stopping.
+6. *Evaluation* – repeated CV for model choice, a held-out test set used once, bootstrap confidence intervals, learning and validation curves.
 
-            display=comparison.sort_values("validation_roc_auc",ascending=False).rename(columns={"model":"Model","score":"Patient score","cutoff":"Cutoff","output":"Output","validation_roc_auc":"Validation ROC-AUC","test_roc_auc":"Test ROC-AUC"})
-            st.dataframe(display[["Model","Patient score","Cutoff","Output","Validation ROC-AUC","Test ROC-AUC"]],column_config={"Patient score":st.column_config.ProgressColumn(format="percent",min_value=0,max_value=1),"Cutoff":st.column_config.NumberColumn(format="percent"),"Validation ROC-AUC":st.column_config.NumberColumn(format="%.3f"),"Test ROC-AUC":st.column_config.NumberColumn(format="%.3f")},hide_index=True,width="stretch")
-            st.caption("Best means highest validation ROC-AUC in this experiment. Small differences are not evidence of statistical superiority. The prevalence baseline ignores patient inputs.")
+**Limitations:** small single-population dataset, one random test split, no external validation. Not for clinical use.
 
-        with context_tab:
-            preds=table("classification_predictions.csv");preds=preds[(preds.split=="test")&(preds.model==name)]
-            if not preds.empty:
-                fig=px.histogram(preds,x="probability",color=preds.actual.map({0:"Negative",1:"Positive"}),nbins=20,barmode="overlay",opacity=.7,title="Score compared with held-out test predictions",labels={"probability":"Predicted probability","color":"Outcome"})
-                fig.add_vline(x=pr,line_width=3,line_color="#7147B8",annotation_text="Current profile");fig.add_vline(x=threshold,line_dash="dash",line_color="#E1785C",annotation_text="Cutoff");chart(fig)
-            train=d[d.split=="train"]
-            percentiles=[]
-            for feature in CLASS_FEATURES:
-                value=clean_profile(x).iloc[0][feature];observed=train[feature].dropna()
-                percentiles.append(np.nan if pd.isna(value) else 100*float((observed<=value).mean()))
-            pct=pd.DataFrame({"feature":[f.replace("_"," ").title() for f in CLASS_FEATURES],"percentile":percentiles}).dropna()
-            fig=px.bar(pct.sort_values("percentile"),x="percentile",y="feature",orientation="h",text="percentile",range_x=[0,100],title="Input percentile within the training cohort")
-            fig.update_traces(texttemplate="%{text:.0f}th",textposition="outside");fig.add_vline(x=50,line_dash="dot",line_color="#777");chart(fig)
+**Reproduce:** `python data_pipeline.py` → `python train.py` → `python build_report.py` → `streamlit run app.py`
+(run in {summary['duration_seconds']:.0f} s with scikit-learn {summary['versions']['sklearn']} and PyTorch {summary['versions']['torch']}).
+""")
+    st.download_button("Download report (HTML)", (ROOT / "reports/REPORT.html").read_bytes(), "PIMA_Diabetes_Report.html",
+                       mime="text/html")
 
-        with explain_tab:
-            train=d[d.split=="train"];rows=[]
-            for feature in CLASS_FEATURES:
-                changed=x.copy();changed.loc[0,feature]=train[feature].median();reference=float(predict_probability(name,changed)[0])
-                rows.append({"feature":feature.replace("_"," ").title(),"change":pr-reference})
-            impacts=pd.DataFrame(rows).sort_values("change")
-            fig=px.bar(impacts,x="change",y="feature",orientation="h",color="change",color_continuous_scale=["#3B8C88","#E8E2EF","#E1785C"],color_continuous_midpoint=0,title="Score change versus replacing one input with its training median",labels={"change":"Probability change"})
-            fig.update_layout(coloraxis_showscale=False);fig.update_xaxes(tickformat="+.1%",zeroline=True,zerolinewidth=2);chart(fig)
-            st.caption("One input changes at a time. This shows model sensitivity, not cause or medical importance.")
 
-        with whatif_tab:
-            feature=st.selectbox("Change one input",CLASS_FEATURES,index=CLASS_FEATURES.index("glucose"),format_func=lambda v:v.replace("_"," ").title())
-            observed=d.loc[d.split=="train",feature].dropna();low,high=observed.quantile([.02,.98]);grid=np.linspace(low,high,60)
-            if feature in ["age","pregnancies"]: grid=np.unique(np.round(grid))
-            scenarios=pd.concat([x]*len(grid),ignore_index=True);scenarios[feature]=grid;scenario_prob=predict_probability(name,scenarios)
-            curve=pd.DataFrame({feature:grid,"probability":scenario_prob})
-            fig=px.line(curve,x=feature,y="probability",title=f"Model response while only {feature.replace('_',' ')} changes",labels={"probability":"Predicted probability"})
-            current=clean_profile(x).iloc[0][feature]
-            if not pd.isna(current): fig.add_scatter(x=[current],y=[pr],mode="markers",marker={"size":12,"color":"#E1785C"},name="Current profile")
-            fig.add_hline(y=threshold,line_dash="dash",line_color="#E1785C",annotation_text="Cutoff");fig.update_yaxes(range=[0,1],tickformat=".0%");chart(fig)
-            st.caption("All other inputs stay fixed. The curve is a model response, not a treatment recommendation.")
-
-else:
-    st.title("Methodology")
-    st.markdown((ROOT/"docs/COURSE_ALIGNMENT.md").read_text(encoding="utf-8"))
-    st.markdown((ROOT/"docs/SOURCES.md").read_text(encoding="utf-8"))
-    st.markdown((ROOT/"docs/REQUIREMENTS_AUDIT.md").read_text(encoding="utf-8"))
-    st.download_button("Download report",(ROOT/"reports/REPORT.md").read_text(encoding="utf-8"),"PIMA_Diabetes_Report.md")
+PAGES = {"Overview": page_overview, "Data explorer": page_data, "Features": page_features,
+         "Model evaluation": page_evaluation, "Bias–variance": page_bias_variance,
+         "Prediction lab": page_prediction, "About": page_about}
+st.sidebar.title("🩺 PIMA Diabetes")
+page = st.sidebar.radio("Page", list(PAGES))
+st.sidebar.caption(f"Best model: **{WINNER}**")
+st.sidebar.info("Coursework project · not for clinical diagnosis.")
+PAGES[page]()

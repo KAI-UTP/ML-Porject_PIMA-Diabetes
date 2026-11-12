@@ -1,105 +1,157 @@
-# PIMA Diabetes Prediction and BMI Regression
+# Diabetes Prediction on the PIMA Indians Dataset
 
-**Group details:** add before submission
+**Course:** TDB3123 Machine Learning · **Group members:** _add names and student IDs_
 
-## Introduction
+## 1. Introduction
 
-This project applies CRISP-DM to the PIMA Indians Diabetes dataset used in Labs 1 and 3. Classification predicts the documented diabetes outcome. A separate regression experiment predicts BMI from the remaining measurements. A PyTorch neural network provides the required neural model. The objective is coursework comparison, not clinical diagnosis.
+Type 2 diabetes is often detected late. A model that flags high-risk patients from routine measurements can help decide who needs a confirmatory test. This project applies the CRISP-DM process to the PIMA Indians Diabetes dataset (used in Labs 1 and 3) to:
 
-## Data understanding and preparation
+1. **classify** whether a patient has diabetes (main task),
+2. **regress** body-mass index (BMI) from the other measurements (secondary task), and
+3. compare classical models with a **feed-forward neural network**.
 
-The dataset contains 768 records, eight numeric predictors, and one binary outcome. There are 268 positive cases. The documented population consists of women aged at least 21 of Pima Indian heritage, limiting generalization.
+Success is measured with ROC-AUC and recall, always against a baseline, and over-fitting is studied with learning and validation curves.
 
-Zeros in glucose, blood pressure, skin thickness, insulin, and BMI are physiologically invalid and are converted to missing values. Median imputation, missingness indicators, scaling, encoding, and selection are learned from training data inside pipelines. The stratified split contains 460 training, 154 validation, and 154 test records.
+## 2. Methodology
 
-Engineered classification features are age bands, glucose × age, pregnancies ÷ age, and glucose × BMI. Embedded Extra Trees selection is compared with all engineered features. BMI regression excludes BMI and every BMI-derived feature from its inputs. Only recorded BMI values form its target.
+### 2.1 Data understanding
 
-Outliers are detected using 1.5 × IQR fences fitted on training measurements only. There are 59 flagged training measurements across features (not unique patients). Extremes are retained: unusual measurements may be clinically meaningful, and removing them without evidence could bias the population. Negative predictors, non-finite values, non-integer ages/pregnancy counts, invalid outcomes, and duplicate records are checked before splitting. Age bands are one-hot encoded; numeric variables use training medians and, where specified, standard scaling.
+The dataset has 768 patients (women of Pima heritage aged 21+), 8 numeric measurements and a binary outcome. 268 patients (34.9%) have diabetes, so a model that always says "no" is already 65.1% accurate; accuracy alone is therefore misleading. Several columns contain **impossible zeros**: insulin (374 rows), skin thickness (227), blood pressure (35), BMI (11) and glucose (5). Glucose is the strongest single signal (correlation 0.50 with the outcome; median 140 vs 107 mg/dL).
 
-## Models and evaluation
+![Data understanding](figures/1_data.png)
 
-Classification compares a prevalence baseline, four logistic variants, decision tree, random forest, and a 32–16 PyTorch ANN. Five-fold stratified cross-validation tunes classical classifiers. The validation set selects the model by ROC-AUC and selects an F1 threshold. The test set is reserved for reporting.
+### 2.2 Data preparation
 
-Regression compares a mean baseline, Ridge, decision tree, and random forest using five-fold cross-validation. Metrics are accuracy, precision, recall, F1, ROC-AUC, average precision, Brier score, MAE, MSE, RMSE, and R².
+- **Cleaning:** types checked, no duplicates or invalid rows; impossible zeros converted to missing values.
+- **Split:** stratified 80/20 split (614 training, 154 test patients, seed 42). The test set is used only once, at the end. All tuning, model selection and threshold choice use **5-fold stratified cross-validation (CV)** on the training set.
+- **Missing values:** median imputation plus missing-value indicator columns.
+- **Encoding and normalization:** one-hot encoding for binned features; `StandardScaler` for logistic regression, SVM and the ANN (trees are scale-invariant).
+- **Outliers:** 1.5 × IQR fences from the training set flag 65 values (mostly pedigree, insulin and blood pressure). They are medically plausible, so they are **kept**; a RobustScaler was tested as an alternative.
+- All steps are inside one scikit-learn `Pipeline`, so imputation and scaling are learned from the training folds only (no data leakage).
 
-## Results
+### 2.3 Feature engineering and selection
 
-| model | accuracy | precision | recall | f1 | roc_auc | average_precision |
-| --- | --- | --- | --- | --- | --- | --- |
-| Prevalence baseline | 0.656 | 0.000 | 0.000 | 0.000 | 0.500 | 0.344 |
-| Logistic / raw | 0.734 | 0.636 | 0.528 | 0.577 | 0.793 | 0.680 |
-| Logistic / scaled | 0.740 | 0.651 | 0.528 | 0.583 | 0.792 | 0.681 |
-| Logistic / engineered | 0.740 | 0.651 | 0.528 | 0.583 | 0.795 | 0.670 |
-| Logistic / selected | 0.747 | 0.659 | 0.547 | 0.598 | 0.795 | 0.693 |
-| Decision tree | 0.695 | 0.562 | 0.509 | 0.535 | 0.743 | 0.523 |
-| Random forest | 0.734 | 0.625 | 0.566 | 0.594 | 0.795 | 0.643 |
-| PyTorch ANN | 0.727 | 0.612 | 0.566 | 0.588 | 0.779 | 0.627 |
+Four engineering techniques were applied: **log transform** of insulin and pedigree (insulin skew 2.00 → −0.17), an **interaction term** glucose × BMI, **binning** of age (21–30, 31–40, 41–50, 51+) and BMI (WHO classes), and **missing indicators**. This gives 23 model inputs. Three selection methods (each ≈10 features) were compared: **filter** (mutual information), **wrapper** (recursive feature elimination with logistic regression) and **embedded** (L1/LASSO logistic regression).
 
-The validation-selected classifier is **Logistic / raw**. Its test ROC-AUC is **0.793**, average precision **0.680**, and recall **0.528** at threshold 0.50. At the validation-selected threshold 0.195, test F1 is 0.626. The bootstrap 95% ROC-AUC interval is 0.724–0.861.
+| feature | MI | LASSO coef | RF importance | MI kept | RFE kept | LASSO kept |
+|---|---|---|---|---|---|---|
+| glucose_x_bmi | 0.161 | 0.930 | 0.259 | True | False | True |
+| glucose | 0.119 | 0.367 | 0.206 | True | True | True |
+| bmi | 0.092 | 0.000 | 0.092 | True | True | False |
+| log_insulin | 0.064 | 0.000 | 0.051 | True | False | False |
+| age | 0.059 | 0.000 | 0.083 | True | True | False |
+| age_band_21-30 | 0.046 | -0.661 | 0.031 | True | True | True |
+| bmi_class_normal | 0.037 | 0.000 | 0.012 | True | True | False |
+| missingindicator_glucose_x_bmi | 0.033 | 0.000 | 0.000 | True | False | False |
+| missingindicator_skin_thickness | 0.031 | 0.000 | 0.005 | True | False | False |
+| age_band_31-40 | 0.029 | 0.000 | 0.007 | True | False | False |
 
-![Classification results](figures/01_results.png)
+All methods keep glucose, and the engineered glucose × BMI feature ranks first for mutual information, LASSO and random-forest importance.
 
-| model | mae | mse | rmse | r2 |
-| --- | --- | --- | --- | --- |
-| Mean baseline | 5.416 | 46.858 | 6.845 | -0.003 |
-| Ridge | 3.850 | 23.881 | 4.887 | 0.489 |
-| Decision tree regressor | 4.655 | 35.100 | 5.925 | 0.249 |
-| Random forest regressor | 4.286 | 29.170 | 5.401 | 0.376 |
+### 2.4 Models
 
-The selected BMI regressor is **Random forest regressor**, with test RMSE **5.401** and R² **0.376**. Performance must be judged against the mean baseline. BMI prediction is an academic secondary task, not a replacement for measurement.
+| Task | Models (tuned with GridSearchCV, 5-fold CV) |
+|---|---|
+| Classification | Baseline (prior), Logistic Regression, Decision Tree, Random Forest, Gradient Boosting, SVM (RBF) |
+| Neural network | PyTorch: inputs → 32 ReLU → dropout 0.2 → 16 ReLU → dropout 0.2 → 1 sigmoid; Adam, binary cross-entropy, batch 32, weight decay, early stopping (patience 25) |
+| Regression (BMI) | Baseline (mean), Linear Regression, Ridge, Lasso, Decision Tree, Random Forest |
 
-![Learning and regression](figures/02_learning_regression.png)
+Feature selection (Mutual information (filter)) is a tuned option in every classifier grid, so CV decides whether it helps. The best classifier is the one with the highest mean ROC-AUC over 5-fold CV repeated 3 times. Its decision threshold maximises F1 on out-of-fold predictions. For regression, BMI and BMI-based features are excluded from the inputs.
 
-## Discussion
+## 3. Results
 
-### How did preprocessing and feature selection affect generalization?
+### 3.1 Effect of preprocessing and feature engineering
 
-The controlled ablation holds logistic C=1, the data split, and CV folds fixed. Its validation ROC-AUC and training-fold CV results are:
+| variant | Logistic Regression | Random Forest |
+|---|---|---|
+| 1. Raw data (zeros kept) | 0.830 | 0.827 |
+| 2. Zeros -> missing + median imputation | 0.840 | 0.830 |
+| 3. + Standard scaling | 0.834 | 0.830 |
+| 3b. + Robust scaling (alternative) | 0.840 | 0.830 |
+| 4. + Feature engineering | 0.844 | 0.836 |
+| 5. + LASSO L1 (embedded) | 0.841 | 0.827 |
+| 5. + Mutual information (filter) | 0.849 | 0.831 |
+| 5. + RFE (wrapper) | 0.844 | 0.833 |
 
-| variant | roc_auc | cv_mean | cv_std |
-| --- | --- | --- | --- |
-| Raw | 0.865 | 0.829 | 0.046 |
-| Scaled | 0.862 | 0.823 | 0.045 |
-| Engineered | 0.859 | 0.832 | 0.050 |
-| Selected | 0.861 | 0.841 | 0.044 |
+![Feature ablation](figures/2_feature_ablation.png)
 
-Scaling changes validation ROC-AUC by -0.0028; engineering changes it by -0.0024; selection changes it by +0.0013. The final tuned selector retains 12 of 23 transformed columns. These are observed differences on one split, not significance claims. Scaling also changes the effective regularization penalty. The separately tuned leaderboard is not a controlled ablation.
+### 3.2 Classification
 
-### Which model performed best and why?
+| model | CV ROC-AUC | CV std | Train ROC-AUC | Test ROC-AUC |
+|---|---|---|---|---|
+| SVM (RBF) | 0.847 | 0.031 | 0.870 | 0.827 |
+| Logistic Regression | 0.846 | 0.037 | 0.870 | 0.835 |
+| ANN (PyTorch) | 0.843 | 0.044 | 0.874 | 0.828 |
+| Random Forest | 0.839 | 0.033 | 0.918 | 0.805 |
+| Gradient Boosting | 0.834 | 0.032 | 0.897 | 0.808 |
+| Decision Tree | 0.791 | 0.033 | 0.884 | 0.787 |
+| Baseline (prior) | 0.500 | 0.000 | 0.500 | 0.500 |
 
-Logistic / raw has the highest validation ROC-AUC among the candidate classifiers; Random forest regressor has the lowest validation RMSE among regressors. Classification and regression metrics answer different questions and cannot identify one winner across tasks. A plausible explanation for competitive logistic performance is that this small numeric dataset supports a relatively simple decision boundary; the experiment does not prove this mechanism. The ANN uses dropout, weight decay, and early stopping, with best checkpoint at epoch 97.
+Test-set metrics at each model's tuned threshold:
 
-### How did size, quality, and data type influence overfitting?
+| model | threshold | accuracy | precision | recall | f1 | roc_auc |
+|---|---|---|---|---|---|---|
+| SVM (RBF) | 0.374 | 0.766 | 0.636 | 0.778 | 0.700 | 0.827 |
+| Logistic Regression | 0.385 | 0.786 | 0.672 | 0.759 | 0.713 | 0.835 |
+| ANN (PyTorch) | 0.297 | 0.747 | 0.597 | 0.852 | 0.702 | 0.828 |
+| Random Forest | 0.317 | 0.721 | 0.575 | 0.778 | 0.661 | 0.805 |
+| Gradient Boosting | 0.295 | 0.721 | 0.575 | 0.778 | 0.661 | 0.808 |
+| Decision Tree | 0.409 | 0.734 | 0.600 | 0.722 | 0.655 | 0.787 |
+| Baseline (prior) | 0.500 | 0.649 | 0.000 | 0.000 | 0.000 | 0.500 |
 
-Only 460 observations train the classifiers. Insulin and skinfold missingness reduces effective information; correlated interactions add complexity. Numeric measurements plus engineered categorical age bands require different transformations. Train/validation ROC-AUC gaps quantify overfitting evidence:
+![Classification results](figures/3_classification.png)
 
-| model | train | validation | train_minus_validation |
-| --- | --- | --- | --- |
-| Decision tree | 0.915 | 0.763 | 0.153 |
-| Logistic / engineered | 0.873 | 0.853 | 0.020 |
-| Logistic / raw | 0.853 | 0.865 | -0.012 |
-| Logistic / scaled | 0.854 | 0.862 | -0.008 |
-| Logistic / selected | 0.862 | 0.855 | 0.006 |
-| Prevalence baseline | 0.500 | 0.500 | 0.000 |
-| PyTorch ANN | 0.864 | 0.861 | 0.003 |
-| Random forest | 0.974 | 0.835 | 0.140 |
+The best model by CV is **SVM (RBF)** (CV ROC-AUC 0.847 ± 0.031; test 0.827, 95% bootstrap CI 0.754–0.887). With its threshold of 0.37 it detects 78% of diabetic test patients with 76.6% accuracy (F1 0.700); at the default 0.5 threshold accuracy is 72.1% but fewer diabetics are found. The ANN stopped early at epoch 19. The most important input (permutation importance) is **glucose** (ROC-AUC drop 0.128), followed by bmi and age.
 
-A larger positive gap is consistent with overfitting, but neither a single gap nor a single-seed learning curve estimates variance reliably. Increasing training data, constraining tree depth/leaf sizes, and using ANN dropout can reduce variance. The existing learning curves use fixed tuned settings and are descriptive. Five-fold CV tunes classical candidates; the ANN instead uses the validation set for early stopping. Sharing validation for early stopping, winner selection and threshold choice can make validation results optimistic. No settings are selected using test scores, but the test set has been inspected during development, so fresh external validation remains necessary.
+### 3.3 Regression (BMI)
 
-### What is recommended for real-world healthcare analytics?
+| model | MAE | MSE | RMSE | R² | CV RMSE |
+|---|---|---|---|---|---|
+| Baseline (mean) | 5.672 | 50.709 | 7.121 | -0.000 | 6.891 |
+| Decision Tree | 4.780 | 37.111 | 6.092 | 0.268 | 5.822 |
+| Lasso | 4.240 | 28.865 | 5.373 | 0.431 | 5.475 |
+| Linear Regression | 4.239 | 28.748 | 5.362 | 0.433 | 5.496 |
+| Random Forest | 4.348 | 29.882 | 5.466 | 0.411 | 5.503 |
+| Ridge | 4.246 | 28.816 | 5.368 | 0.432 | 5.486 |
 
-Use representative, consented, externally validated data; investigate missingness mechanisms and subgroup performance; validate calibration and select thresholds against explicitly agreed costs. Add prospective monitoring, human review and privacy controls. A threshold chosen for F1 does not encode clinical harm or establish clinical suitability. The app's single-feature sensitivity and what-if plots describe associations in the fitted model, not treatment effects.
+![Regression results](figures/5_regression.png)
 
-The dataset is small, historical, and population-specific. Missing measurements may not be missing at random. A random split does not test future or external populations. Real deployment would require broader data, external validation, calibration, subgroup evaluation, and clinical review.
+**Lasso** has the lowest CV RMSE; on the test set it reaches RMSE 5.37 and R² 0.43, compared with RMSE 7.12 for the mean baseline. Skin thickness is the strongest BMI predictor.
 
-## Conclusion
+### 3.4 Bias–variance
 
-The project implements the complete required pipeline: cleaning, feature engineering, embedded selection, classification, regression, neural-network training, bias–variance diagnostics, and Streamlit visualization. Results support comparison of methods on this dataset only.
+![Bias-variance](figures/4_bias_variance.png)
+
+| model | train_roc_auc | cv_roc_auc | gap |
+|---|---|---|---|
+| SVM (RBF) | 0.870 | 0.847 | 0.023 |
+| Logistic Regression | 0.870 | 0.846 | 0.024 |
+| ANN (PyTorch) | 0.874 | 0.843 | 0.030 |
+| Gradient Boosting | 0.897 | 0.834 | 0.063 |
+| Random Forest | 0.918 | 0.839 | 0.078 |
+| Decision Tree | 0.884 | 0.791 | 0.093 |
+
+## 4. Discussion
+
+**How did preprocessing and feature selection affect generalization?**
+Treating impossible zeros as missing was the most valuable step: logistic-regression CV ROC-AUC rose from 0.830 to 0.840 and became more stable across folds. Scaling did not change the score of the random forest, confirming that trees do not need it, while it is required for the SVM and ANN. Feature engineering improved both logistic regression (0.844) and random forest (0.836). Mutual-information selection gave the best logistic score (0.849) with fewer inputs. All these gains are smaller than the fold-to-fold standard deviation (≈0.03), so on this small dataset preprocessing mainly made the models simpler and more stable rather than much more accurate.
+
+**Which model type performed best and why?**
+SVM (RBF) had the highest CV ROC-AUC, but logistic regression (CV 0.846, test 0.835) and the ANN (CV 0.843) perform the same within the uncertainty. The data are small, tabular and numeric, and the classes are separated by a smooth boundary driven mainly by glucose, so complex models add no benefit. For healthcare use, **logistic regression** is the recommended model: equally accurate, transparent and the least over-fitted. For BMI, the regularised linear models beat the trees.
+
+**How did dataset size, feature quality and data type influence overfitting?**
+With only 614 training rows, flexible models over-fit. An unrestricted decision tree reaches train ROC-AUC 1.000 but CV 0.652, while CV peaks at depth 3 (0.793). The tuned tree and random forest still show the largest train–CV gaps (0.09 and 0.08); the random-forest regressor has train R² 0.66 but CV R² 0.36. Feature quality is limited: insulin is missing for 49% of patients and skin thickness for 30%, so they add little signal. Because the inputs are continuous and only moderately informative, the linear models, SVM and ANN have small gaps (≈0.02–0.03): their remaining error is bias and noise, not variance. The learning curves still rise slowly, so more data would help.
+
+**What recommendations would you make for real-world healthcare analytics?**
+(1) Train on larger and more diverse data (men, other populations, several hospitals) and validate externally. (2) Prefer interpretable and well-calibrated models, and choose the decision threshold together with clinicians according to the cost of a missed case. (3) Record missing measurements explicitly instead of as zeros. (4) Monitor performance and fairness after deployment and keep a clinician in the loop: the model is a screening aid, not a diagnosis.
+
+## 5. Conclusion
+
+A full CRISP-DM pipeline was built: cleaning of hidden missing values, outlier analysis, four feature-engineering techniques, three feature-selection methods, six tuned classifiers, a PyTorch ANN and six BMI regressors, evaluated with repeated cross-validation, a held-out test set and bias–variance diagnostics. The best classifiers reach a test ROC-AUC of about 0.83 and detect about 78% of diabetic patients at the tuned threshold. Logistic regression offers the best balance of accuracy, stability and interpretability. An interactive Streamlit dashboard presents all results and a prediction lab.
 
 ## References
 
-- [PIMA dataset CSV](https://raw.githubusercontent.com/jbrownlee/Datasets/master/pima-indians-diabetes.data.csv)
-- [Dataset documentation](https://raw.githubusercontent.com/jbrownlee/Datasets/master/pima-indians-diabetes.names)
-- Local Machine Learning Labs 1 and 3 and project brief.
-- [scikit-learn common pitfalls](https://scikit-learn.org/stable/common_pitfalls.html)
-- [PyTorch optimization tutorial](https://docs.pytorch.org/tutorials/beginner/basics/optimization_tutorial.html)
+- PIMA Indians Diabetes dataset: <https://raw.githubusercontent.com/jbrownlee/Datasets/master/pima-indians-diabetes.data.csv>
+- TDB3123 lecture notes, Chapters 2–5 and 8; Labs 1, 3, 4 and 5.
+- scikit-learn User Guide: pipelines, cross-validation and common pitfalls. <https://scikit-learn.org/stable/common_pitfalls.html>
+- PyTorch tutorials: building and training neural networks. <https://docs.pytorch.org/tutorials/>

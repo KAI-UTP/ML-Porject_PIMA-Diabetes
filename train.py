@@ -1,159 +1,326 @@
-"""Reproducible PIMA classification, BMI regression, and PyTorch ANN experiments."""
-import copy, json, platform, time
-import joblib, numpy as np, pandas as pd, sklearn, torch
-from torch import nn
+"""Experiments for the PIMA project: feature study, classification, BMI regression, ANN, bias-variance.
+
+Each step is a function so the notebook can run and explain it; `run()` executes everything
+and saves the artifacts used by the Streamlit app and the report.
+"""
+from functools import partial
+import json
+import platform
+import time
+
+import joblib
+import numpy as np
+import pandas as pd
+import sklearn
+import torch
 from sklearn.base import clone
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.feature_selection import SelectFromModel
-from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier, RandomForestRegressor
-from sklearn.linear_model import LogisticRegression, Ridge
-from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn.dummy import DummyClassifier, DummyRegressor
-from sklearn.model_selection import GridSearchCV, StratifiedKFold, KFold, cross_val_score
-from sklearn.metrics import *
+from sklearn.ensemble import (GradientBoostingClassifier, RandomForestClassifier,
+                              RandomForestRegressor)
+from sklearn.feature_selection import RFE, SelectFromModel, SelectKBest, mutual_info_classif
 from sklearn.inspection import permutation_importance
-from data_pipeline import ROOT, SEED, CLASS_FEATURES, REG_FEATURES, FeatureEngineer, prepare_data
+from sklearn.linear_model import Lasso, LinearRegression, LogisticRegression, Ridge
+from sklearn.metrics import (accuracy_score, average_precision_score, brier_score_loss, f1_score,
+                             mean_absolute_error, mean_squared_error, precision_recall_curve,
+                             precision_score, r2_score, recall_score, roc_auc_score)
+from sklearn.model_selection import (GridSearchCV, KFold, RepeatedStratifiedKFold, StratifiedKFold,
+                                     cross_val_predict, cross_validate, learning_curve,
+                                     validation_curve)
+from sklearn.pipeline import Pipeline
+from sklearn.svm import SVC
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+
+from ann import TorchMLPClassifier
+from data_pipeline import (FEATURES, REG_FEATURES, REG_TARGET, ROOT, SEED, TARGET,
+                           build_preprocessor, load_cohort)
+
+ARTIFACTS = ROOT / "artifacts"
+CV = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
+REPEATED_CV = RepeatedStratifiedKFold(n_splits=5, n_repeats=3, random_state=SEED)
+REG_CV = KFold(n_splits=5, shuffle=True, random_state=SEED)
+
+SELECTORS = {
+    "Mutual information (filter)": SelectKBest(partial(mutual_info_classif, random_state=SEED), k=10),
+    "RFE (wrapper)": RFE(LogisticRegression(max_iter=5000), n_features_to_select=10),
+    "LASSO L1 (embedded)": SelectFromModel(LogisticRegression(penalty="l1", solver="liblinear", C=0.1)),
+}
 
 
-def preprocessing(task="classification", engineered=True, scaled=True, selected=False):
-    base = CLASS_FEATURES if task == "classification" else REG_FEATURES
-    numeric = list(base) + (["glucose_age", "pregnancies_per_age"] if engineered else []) + (["glucose_bmi"] if engineered and task == "classification" else [])
-    categorical = ["age_band"] if engineered else []
-    num_pipe = Pipeline([("impute", SimpleImputer(strategy="median", add_indicator=True)), ("scale", StandardScaler() if scaled else "passthrough")])
-    transformers = [("numeric", num_pipe, numeric)]
-    if categorical:
-        transformers.append(("categorical", Pipeline([("impute", SimpleImputer(strategy="most_frequent")), ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))]), categorical))
-    steps = [("engineer", FeatureEngineer(task, engineered)), ("prepare", ColumnTransformer(transformers))]
-    if selected and task == "classification":
-        selector = ExtraTreesClassifier(n_estimators=150, random_state=SEED, min_samples_leaf=4)
-        steps.append(("select", SelectFromModel(selector, threshold="median")))
-    return steps
+# ---------------------------------------------------------------- Metrics
+
+def classification_metrics(y, p, threshold=0.5) -> dict:
+    pred = (np.asarray(p) >= threshold).astype(int)
+    return {"accuracy": accuracy_score(y, pred), "precision": precision_score(y, pred, zero_division=0),
+            "recall": recall_score(y, pred), "f1": f1_score(y, pred, zero_division=0),
+            "roc_auc": roc_auc_score(y, p), "average_precision": average_precision_score(y, p),
+            "brier": brier_score_loss(y, p), "threshold": threshold}
 
 
-def cmetrics(y, p, threshold=.5):
-    pred = np.asarray(p) >= threshold
-    return {"accuracy":accuracy_score(y,pred),"precision":precision_score(y,pred,zero_division=0),"recall":recall_score(y,pred,zero_division=0),"f1":f1_score(y,pred,zero_division=0),"roc_auc":roc_auc_score(y,p),"average_precision":average_precision_score(y,p),"brier":brier_score_loss(y,p),"n":len(y),"positives":int(np.sum(y)),"threshold":threshold}
+def regression_metrics(y, pred) -> dict:
+    mse = mean_squared_error(y, pred)
+    return {"mae": mean_absolute_error(y, pred), "mse": mse, "rmse": np.sqrt(mse), "r2": r2_score(y, pred)}
 
 
-def rmetrics(y, p):
-    return {"mae":mean_absolute_error(y,p),"mse":mean_squared_error(y,p),"rmse":np.sqrt(mean_squared_error(y,p)),"r2":r2_score(y,p),"n":len(y)}
+def best_f1_threshold(y, p) -> float:
+    """Cut-off that maximises F1 (chosen on out-of-fold predictions, never on the test set)."""
+    precision, recall, thresholds = precision_recall_curve(y, p)
+    f1 = 2 * precision[:-1] * recall[:-1] / np.maximum(precision[:-1] + recall[:-1], 1e-12)
+    return float(thresholds[np.argmax(f1)])
 
 
-def make_network(dim):
-    return nn.Sequential(nn.Linear(dim,32),nn.ReLU(),nn.Dropout(.2),nn.Linear(32,16),nn.ReLU(),nn.Linear(16,1))
+def bootstrap_auc_ci(y, p, n=1000) -> tuple[float, float]:
+    rng = np.random.default_rng(SEED)
+    y, p = np.asarray(y), np.asarray(p)
+    scores = []
+    for _ in range(n):
+        idx = rng.integers(len(y), size=len(y))
+        if y[idx].min() != y[idx].max():
+            scores.append(roc_auc_score(y[idx], p[idx]))
+    return tuple(np.quantile(scores, [0.025, 0.975]))
 
 
-def train_ann(train, validation, epochs=150):
-    torch.manual_seed(SEED)
-    prep=Pipeline(preprocessing("classification",True,True,False))
-    x=prep.fit_transform(train[CLASS_FEATURES]).astype("float32"); v=prep.transform(validation[CLASS_FEATURES]).astype("float32")
-    xt=torch.tensor(x); yt=torch.tensor(train.outcome.to_numpy(dtype="float32")).reshape(-1,1)
-    xv=torch.tensor(v); yv=torch.tensor(validation.outcome.to_numpy(dtype="float32")).reshape(-1,1)
-    model=make_network(x.shape[1]); opt=torch.optim.Adam(model.parameters(),lr=.001,weight_decay=1e-4); lossfn=nn.BCEWithLogitsLoss()
-    history=[]; best=float("inf"); stale=0; best_epoch=0
-    for epoch in range(1,epochs+1):
-        model.train(); opt.zero_grad(); loss=lossfn(model(xt),yt); loss.backward(); opt.step()
-        model.eval()
-        with torch.no_grad():
-            a=model(xt); b=model(xv); tl=lossfn(a,yt).item(); vl=lossfn(b,yv).item()
-            ta=((a.sigmoid()>=.5)==yt.bool()).float().mean().item(); va=((b.sigmoid()>=.5)==yv.bool()).float().mean().item()
-        history.append({"epoch":epoch,"train_loss":tl,"validation_loss":vl,"train_accuracy":ta,"validation_accuracy":va})
-        if vl < best-1e-5: best=vl; state=copy.deepcopy(model.state_dict()); best_epoch=epoch; stale=0
-        else: stale+=1
-        if stale>=15: break
-    model.load_state_dict(state); model.eval(); return prep,model,history,best_epoch
+# ---------------------------------------------------------------- Part A: outliers
+
+def outlier_audit(train, test) -> pd.DataFrame:
+    """1.5 x IQR fences fitted on the training split; outliers are flagged, not removed."""
+    rows = []
+    for col in FEATURES:
+        q1, q3 = train[col].quantile([0.25, 0.75])
+        low, high = q1 - 1.5 * (q3 - q1), q3 + 1.5 * (q3 - q1)
+        for split, frame in [("train", train), ("test", test)]:
+            x = frame[col].dropna()
+            rows.append({"feature": col, "split": split, "lower_fence": low, "upper_fence": high,
+                         "outliers": int(((x < low) | (x > high)).sum()), "recorded": len(x)})
+    return pd.DataFrame(rows)
 
 
-def ann_prob(prep, model, X):
-    with torch.no_grad(): return model(torch.tensor(prep.transform(X).astype("float32"))).sigmoid().numpy().ravel()
+# ---------------------------------------------------------------- Part B: feature engineering & selection
+
+def feature_ablation(train) -> pd.DataFrame:
+    """Add one preparation step at a time and measure 5x3 repeated-CV ROC-AUC on the training split."""
+    variants = [
+        ("1. Raw data (zeros kept)", dict(zeros_as_missing=False, engineered=False, scaler=None), None),
+        ("2. Zeros -> missing + median imputation", dict(engineered=False, scaler=None), None),
+        ("3. + Standard scaling", dict(engineered=False), None),
+        ("3b. + Robust scaling (alternative)", dict(engineered=False, scaler="robust"), None),
+        ("4. + Feature engineering", dict(), None),
+    ] + [(f"5. + {name}", dict(), name) for name in SELECTORS]
+    models = {"Logistic Regression": LogisticRegression(max_iter=5000),
+              "Random Forest": RandomForestClassifier(n_estimators=200, min_samples_leaf=5, random_state=SEED)}
+    rows = []
+    for variant, prep_args, selector in variants:
+        for model_name, model in models.items():
+            steps = [("prep", build_preprocessor(**prep_args))]
+            if selector:
+                steps.append(("select", clone(SELECTORS[selector])))
+            scores = cross_validate(Pipeline(steps + [("model", clone(model))]), train[FEATURES], train[TARGET],
+                                    cv=REPEATED_CV, scoring="roc_auc", return_train_score=True, n_jobs=-1)
+            rows.append({"variant": variant, "model": model_name,
+                         "cv_roc_auc": scores["test_score"].mean(), "cv_std": scores["test_score"].std(),
+                         "train_roc_auc": scores["train_score"].mean()})
+    return pd.DataFrame(rows)
 
 
-def run():
-    start=time.time(); out=ROOT/"artifacts"; out.mkdir(exist_ok=True)
-    if not (ROOT/"data/processed/cohort.csv").exists(): prepare_data()
-    d=pd.read_csv(ROOT/"data/processed/cohort.csv"); parts={s:d[d.split==s].reset_index(drop=True) for s in ["train","validation","test"]}; tr,va,te=parts.values()
-    # Outlier fences are estimated from training data; unusual records are retained.
-    outliers=[]
-    for feature in CLASS_FEATURES:
-        q1,q3=tr[feature].quantile([.25,.75]); iqr=q3-q1
-        low,high=q1-1.5*iqr,q3+1.5*iqr
-        for split,frame in parts.items():
-            observed=frame[feature].dropna()
-            outliers.append(dict(feature=feature,split=split,lower=low,upper=high,flagged=int(((observed<low)|(observed>high)).sum()),observed=len(observed)))
-    pd.DataFrame(outliers).to_csv(out/"outlier_audit.csv",index=False)
-    cv=StratifiedKFold(5,shuffle=True,random_state=SEED); rows=[]; preds=[]; models={}; tuning=[]
-    specs={
-      "Prevalence baseline":(False,True,False,DummyClassifier(strategy="prior"),{}),
-      "Logistic / raw":(False,False,False,LogisticRegression(max_iter=3000),{}),
-      "Logistic / scaled":(False,True,False,LogisticRegression(max_iter=3000),{}),
-      "Logistic / engineered":(True,True,False,LogisticRegression(max_iter=3000),{"model__C":[.1,1,10]}),
-      "Logistic / selected":(True,True,True,LogisticRegression(max_iter=3000),{"model__C":[.1,1,10]}),
-      "Decision tree":(True,True,False,DecisionTreeClassifier(random_state=SEED,min_samples_leaf=8),{"model__max_depth":[3,5,8]}),
-      "Random forest":(True,True,False,RandomForestClassifier(random_state=SEED,n_estimators=300,min_samples_leaf=4),{"model__max_depth":[4,8,None]})}
-    for name,(eng,scale,sel,est,grid) in specs.items():
-        pipe=Pipeline(preprocessing("classification",eng,scale,sel)+[("model",est)])
-        if grid:
-            gs=GridSearchCV(pipe,grid,cv=cv,scoring="roc_auc",return_train_score=True); gs.fit(tr[CLASS_FEATURES],tr.outcome); pipe=gs.best_estimator_
-            for i,p in enumerate(gs.cv_results_["params"]): tuning.append({"task":"classification","model":name,"params":str(p),"cv_score":gs.cv_results_["mean_test_score"][i]})
-        else: pipe.fit(tr[CLASS_FEATURES],tr.outcome)
-        models[name]=pipe
-        for split,f in parts.items():
-            pr=pipe.predict_proba(f[CLASS_FEATURES])[:,1]; rows.append({"model":name,"split":split,**cmetrics(f.outcome,pr)}); preds.append(pd.DataFrame({"record_id":f.record_id,"model":name,"split":split,"actual":f.outcome,"probability":pr}))
-    prep,ann,history,best_epoch=train_ann(tr,va)
-    for split,f in parts.items():
-        pr=ann_prob(prep,ann,f[CLASS_FEATURES]); rows.append({"model":"PyTorch ANN","split":split,**cmetrics(f.outcome,pr)}); preds.append(pd.DataFrame({"record_id":f.record_id,"model":"PyTorch ANN","split":split,"actual":f.outcome,"probability":pr}))
-    cm=pd.DataFrame(rows); cp=pd.concat(preds); winner=cm[(cm.split=="validation")&(cm.model!="Prevalence baseline")].sort_values("roc_auc",ascending=False).iloc[0].model
-    ablations=[]
-    for label,eng,scaled,selected in [("Raw",False,False,False),("Scaled",False,True,False),("Engineered",True,True,False),("Selected",True,True,True)]:
-        estimator=Pipeline(preprocessing("classification",eng,scaled,selected)+[("model",LogisticRegression(C=1,max_iter=3000))])
-        scores=cross_val_score(estimator,tr[CLASS_FEATURES],tr.outcome,cv=cv,scoring="roc_auc")
-        estimator.fit(tr[CLASS_FEATURES],tr.outcome)
-        for split,frame in [("train",tr),("validation",va)]:
-            ablations.append(dict(variant=label,split=split,roc_auc=roc_auc_score(frame.outcome,estimator.predict_proba(frame[CLASS_FEATURES])[:,1]),cv_mean=scores.mean(),cv_std=scores.std()))
-    pd.DataFrame(ablations).to_csv(out/"preprocessing_ablation.csv",index=False)
-    selected_pipe=models["Logistic / selected"]
-    feature_names=selected_pipe.named_steps["prepare"].get_feature_names_out()
-    selection=selected_pipe.named_steps["select"]
-    pd.DataFrame(dict(feature=feature_names,selected=selection.get_support(),importance=selection.estimator_.feature_importances_)).to_csv(out/"selected_features.csv",index=False)
-    vp=cp[(cp.split=="validation")&(cp.model==winner)]; precision,recall,thresholds=precision_recall_curve(vp.actual,vp.probability); fs=2*precision[:-1]*recall[:-1]/np.maximum(precision[:-1]+recall[:-1],1e-12); threshold=float(thresholds[np.argmax(fs)])
-    tp=cp[(cp.split=="test")&(cp.model==winner)]; selected_test=cmetrics(tp.actual,tp.probability,threshold)
-    cm.to_csv(out/"classification_metrics.csv",index=False); cp.to_csv(out/"classification_predictions.csv",index=False); pd.DataFrame(history).to_csv(out/"ann_history.csv",index=False)
-    operating=[]
-    for (model,split),frame in cp.groupby(["model","split"]):
-        cutoff=threshold if model==winner else .5
-        operating.append(dict(model=model,split=split,**cmetrics(frame.actual,frame.probability,cutoff)))
-    pd.DataFrame(operating).to_csv(out/"operating_metrics.csv",index=False)
-    joblib.dump(models,out/"classifiers.joblib"); joblib.dump(prep,out/"ann_preprocessor.joblib"); torch.save({"input_dim":ann[0].in_features,"state_dict":ann.state_dict()},out/"ann.pt")
-    imp=permutation_importance(models["Random forest"],va[CLASS_FEATURES],va.outcome,n_repeats=20,random_state=SEED,scoring="roc_auc"); pd.DataFrame({"feature":CLASS_FEATURES,"importance":imp.importances_mean,"std":imp.importances_std}).sort_values("importance",ascending=False).to_csv(out/"permutation_importance.csv",index=False)
-    curves=[]
-    for frac in [.25,.5,.75,1.]:
-        sub=tr.sample(frac=frac,random_state=SEED).sort_index()
-        for name in ["Logistic / engineered","Random forest"]:
-            model=clone(models[name]).fit(sub[CLASS_FEATURES],sub.outcome)
-            for split,f in [("train",sub),("validation",va)]: curves.append({"model":name,"n_train":len(sub),"split":split,"roc_auc":roc_auc_score(f.outcome,model.predict_proba(f[CLASS_FEATURES])[:,1])})
-    pd.DataFrame(curves).to_csv(out/"learning_curves.csv",index=False)
-    # BMI regression uses only observed BMI and excludes BMI plus every BMI-derived feature.
-    rparts={s:f.dropna(subset=["bmi"]).reset_index(drop=True) for s,f in parts.items()}; rtr=rparts["train"]; rcv=KFold(5,shuffle=True,random_state=SEED); rrows=[]; rpred=[]; regressors={}
-    rspecs={"Mean baseline":(DummyRegressor(),{}),"Ridge":(Ridge(),{"model__alpha":[.1,1,10,100]}),"Decision tree regressor":(DecisionTreeRegressor(random_state=SEED,min_samples_leaf=8),{"model__max_depth":[3,5,8]}),"Random forest regressor":(RandomForestRegressor(random_state=SEED,n_estimators=300,min_samples_leaf=5),{"model__max_depth":[4,8,None]})}
-    for name,(est,grid) in rspecs.items():
-        pipe=Pipeline(preprocessing("regression",True,True,False)+[("model",est)])
-        if grid:
-            gs=GridSearchCV(pipe,grid,cv=rcv,scoring="neg_root_mean_squared_error"); gs.fit(rtr[REG_FEATURES],rtr.bmi); pipe=gs.best_estimator_
-            for i,p in enumerate(gs.cv_results_["params"]): tuning.append({"task":"regression","model":name,"params":str(p),"cv_score":-gs.cv_results_["mean_test_score"][i]})
-        else: pipe.fit(rtr[REG_FEATURES],rtr.bmi)
-        regressors[name]=pipe
-        for split,f in rparts.items():
-            pr=pipe.predict(f[REG_FEATURES]); rrows.append({"model":name,"split":split,**rmetrics(f.bmi,pr)}); rpred.append(pd.DataFrame({"record_id":f.record_id,"model":name,"split":split,"actual":f.bmi,"predicted":pr,"residual":f.bmi-pr}))
-    rm=pd.DataFrame(rrows); rm.to_csv(out/"regression_metrics.csv",index=False); pd.concat(rpred).to_csv(out/"regression_predictions.csv",index=False); joblib.dump(regressors,out/"regressors.joblib"); pd.DataFrame(tuning).to_csv(out/"cv_results.csv",index=False)
-    rw=rm[rm.split=="validation"].sort_values("rmse").iloc[0].model
-    rng=np.random.default_rng(SEED); bs=[]; y=tp.actual.to_numpy(); pr=tp.probability.to_numpy()
-    for _ in range(500):
-        ix=rng.integers(len(y),size=len(y)); bs.append([roc_auc_score(y[ix],pr[ix]),average_precision_score(y[ix],pr[ix])])
-    summary={"winner":winner,"regression_winner":rw,"threshold":threshold,"test_at_selected_threshold":selected_test,"bootstrap_95pct":{"roc_auc":np.quantile(np.array(bs)[:,0],[.025,.975]).tolist(),"average_precision":np.quantile(np.array(bs)[:,1],[.025,.975]).tolist()},"ann_best_epoch":best_epoch,"ann_epochs_run":len(history),"duration_seconds":round(time.time()-start,1),"versions":{"python":platform.python_version(),"sklearn":sklearn.__version__,"torch":torch.__version__,"pandas":pd.__version__}}
-    (out/"run_summary.json").write_text(json.dumps(summary,indent=2),encoding="utf-8"); print(json.dumps(summary,indent=2)); return summary
+def choose_selector(ablation) -> str:
+    """Selection method with the best mean CV ROC-AUC across both ablation models."""
+    rows = ablation[ablation.variant.str.startswith("5.")]
+    return rows.groupby("variant").cv_roc_auc.mean().idxmax().removeprefix("5. + ")
 
 
-if __name__ == "__main__": run()
+def selection_table(train) -> pd.DataFrame:
+    """Score of every engineered feature under each selection method (fitted on training data)."""
+    prep = build_preprocessor().fit(train[FEATURES], train[TARGET])
+    X, y = prep.transform(train[FEATURES]), train[TARGET]
+    names = prep.named_steps["columns"].get_feature_names_out()
+    table = pd.DataFrame({"feature": names})
+    for name, selector in SELECTORS.items():
+        table[name] = clone(selector).fit(X, y).get_support()
+    table["mutual_information"] = mutual_info_classif(X, y, random_state=SEED)
+    table["lasso_coefficient"] = SELECTORS["LASSO L1 (embedded)"].estimator.fit(X, y).coef_.ravel()
+    forest = RandomForestClassifier(n_estimators=300, min_samples_leaf=5, random_state=SEED).fit(X, y)
+    table["rf_importance"] = forest.feature_importances_
+    return table.sort_values("mutual_information", ascending=False).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------- Part C: models
+
+def classifier_specs(selector) -> dict:
+    """name -> (pipeline, grid). Feature selection is a tuned option: CV decides whether it helps."""
+    def pipe(model, scaler="standard"):
+        return Pipeline([("prep", build_preprocessor(scaler=scaler)), ("select", "passthrough"), ("model", model)])
+    select = {"select": ["passthrough", selector]}
+    return {
+        "Baseline (prior)": (pipe(DummyClassifier(strategy="prior")), {}),
+        "Logistic Regression": (pipe(LogisticRegression(max_iter=5000)),
+                                {**select, "model__C": [0.01, 0.1, 1, 10]}),
+        "Decision Tree": (pipe(DecisionTreeClassifier(random_state=SEED), scaler=None),
+                          {**select, "model__max_depth": [3, 4, 5, 6, 8], "model__min_samples_leaf": [5, 10, 20]}),
+        "Random Forest": (pipe(RandomForestClassifier(n_estimators=300, random_state=SEED), scaler=None),
+                          {**select, "model__max_depth": [4, 6, 8, None], "model__min_samples_leaf": [1, 5],
+                           "model__max_features": ["sqrt", 0.5]}),
+        "Gradient Boosting": (pipe(GradientBoostingClassifier(subsample=0.8, random_state=SEED), scaler=None),
+                              {**select, "model__learning_rate": [0.03, 0.1], "model__n_estimators": [100, 200],
+                               "model__max_depth": [2, 3]}),
+        "SVM (RBF)": (pipe(SVC(probability=True, random_state=SEED)),
+                      {**select, "model__C": [0.3, 1, 3], "model__gamma": ["scale", 0.01]}),
+        "ANN (PyTorch)": (pipe(TorchMLPClassifier(random_state=SEED)),
+                          {**select, "model__hidden": [(32, 16), (64, 32)], "model__weight_decay": [1e-4, 1e-3]}),
+    }
+
+
+def regressor_specs() -> dict:
+    def pipe(model, scaler="standard"):
+        return Pipeline([("prep", build_preprocessor(scaler=scaler)), ("model", model)])
+    return {
+        "Baseline (mean)": (pipe(DummyRegressor()), {}),
+        "Linear Regression": (pipe(LinearRegression()), {}),
+        "Ridge": (pipe(Ridge()), {"model__alpha": [0.1, 1, 10, 100]}),
+        "Lasso": (pipe(Lasso(max_iter=20000)), {"model__alpha": [0.01, 0.05, 0.1, 0.5]}),
+        "Decision Tree": (pipe(DecisionTreeRegressor(random_state=SEED), scaler=None),
+                          {"model__max_depth": [3, 4, 5, 6, 8], "model__min_samples_leaf": [5, 10, 20]}),
+        "Random Forest": (pipe(RandomForestRegressor(n_estimators=300, random_state=SEED), scaler=None),
+                          {"model__max_depth": [4, 8, None], "model__min_samples_leaf": [3, 5]}),
+    }
+
+
+def tune(specs, X, y, cv, scoring) -> tuple[dict, pd.DataFrame]:
+    """Grid search each model with k-fold CV on the training split; return refitted best models."""
+    best, rows = {}, []
+    for name, (pipe, grid) in specs.items():
+        search = GridSearchCV(pipe, grid or {}, cv=cv, scoring=scoring, n_jobs=-1).fit(X, y)
+        best[name] = search.best_estimator_
+        params = {k.split("__")[-1]: (type(v).__name__ if hasattr(v, "fit") else v)
+                  for k, v in search.best_params_.items()}
+        rows.append({"model": name, "best_params": json.dumps(params, default=str),
+                     "grid_size": len(search.cv_results_["params"])})
+    return best, pd.DataFrame(rows)
+
+
+def evaluate_classifiers(models, train, test):
+    """Repeated-CV comparison, out-of-fold threshold, then a single final test evaluation."""
+    X, y = train[FEATURES], train[TARGET]
+    summary, metrics, predictions = [], [], []
+    for name, model in models.items():
+        scores = cross_validate(model, X, y, cv=REPEATED_CV, scoring=["roc_auc", "f1", "accuracy"],
+                                return_train_score=True, n_jobs=-1)
+        oof = cross_val_predict(model, X, y, cv=CV, method="predict_proba", n_jobs=-1)[:, 1]
+        threshold = 0.5 if name.startswith("Baseline") else best_f1_threshold(y, oof)
+        test_p = model.predict_proba(test[FEATURES])[:, 1]
+        low, high = bootstrap_auc_ci(test[TARGET], test_p)
+        summary.append({"model": name, "cv_roc_auc": scores["test_roc_auc"].mean(),
+                        "cv_roc_auc_std": scores["test_roc_auc"].std(),
+                        "train_roc_auc": scores["train_roc_auc"].mean(),
+                        "cv_f1": scores["test_f1"].mean(), "cv_accuracy": scores["test_accuracy"].mean(),
+                        "threshold": threshold, "test_roc_auc": roc_auc_score(test[TARGET], test_p),
+                        "test_auc_ci_low": low, "test_auc_ci_high": high})
+        for split, frame, p in [("train", train, model.predict_proba(X)[:, 1]), ("cv", train, oof), ("test", test, test_p)]:
+            metrics.append({"model": name, "split": split, **classification_metrics(frame[TARGET], p, threshold)})
+            if split != "train":
+                predictions.append(pd.DataFrame({"record_id": frame.record_id, "model": name, "split": split,
+                                                 "actual": frame[TARGET], "probability": p}))
+    summary = pd.DataFrame(summary).sort_values("cv_roc_auc", ascending=False)
+    return summary, pd.DataFrame(metrics), pd.concat(predictions, ignore_index=True)
+
+
+def evaluate_regressors(models, train, test):
+    X, y = train[REG_FEATURES], train[REG_TARGET]
+    metrics, predictions = [], []
+    for name, model in models.items():
+        oof = cross_val_predict(model, X, y, cv=REG_CV, n_jobs=-1)
+        for split, frame, pred in [("train", train, model.predict(X)), ("cv", train, oof),
+                                   ("test", test, model.predict(test[REG_FEATURES]))]:
+            metrics.append({"model": name, "split": split, **regression_metrics(frame[REG_TARGET], pred)})
+            if split != "train":
+                predictions.append(pd.DataFrame({"record_id": frame.record_id, "model": name, "split": split,
+                                                 "actual": frame[REG_TARGET], "predicted": pred}))
+    return pd.DataFrame(metrics), pd.concat(predictions, ignore_index=True)
+
+
+# ---------------------------------------------------------------- Part D: bias-variance
+
+def learning_curves(models, train, names) -> pd.DataFrame:
+    rows = []
+    for name in names:
+        sizes, tr, cv = learning_curve(models[name], train[FEATURES], train[TARGET], cv=CV, scoring="roc_auc",
+                                       train_sizes=np.linspace(0.2, 1.0, 6), n_jobs=-1)
+        for n, a, b in zip(sizes, tr, cv):
+            rows.append({"model": name, "n_train": int(n), "train_roc_auc": a.mean(), "train_std": a.std(),
+                         "cv_roc_auc": b.mean(), "cv_std": b.std()})
+    return pd.DataFrame(rows)
+
+
+def depth_curve(train) -> pd.DataFrame:
+    """Decision-tree depth vs train/CV ROC-AUC: the classic bias-variance trade-off."""
+    pipe = Pipeline([("prep", build_preprocessor(scaler=None)), ("model", DecisionTreeClassifier(random_state=SEED))])
+    depths = list(range(1, 13))
+    tr, cv = validation_curve(pipe, train[FEATURES], train[TARGET], param_name="model__max_depth",
+                              param_range=depths, cv=CV, scoring="roc_auc", n_jobs=-1)
+    return pd.DataFrame({"max_depth": depths, "train_roc_auc": tr.mean(1), "cv_roc_auc": cv.mean(1),
+                         "cv_std": cv.std(1)})
+
+
+# ---------------------------------------------------------------- Run everything
+
+def run() -> dict:
+    start = time.time()
+    ARTIFACTS.mkdir(exist_ok=True)
+    train, test = load_cohort()
+    save = lambda frame, name: frame.to_csv(ARTIFACTS / name, index=False)
+
+    save(outlier_audit(train, test), "outlier_audit.csv")
+
+    ablation = feature_ablation(train)
+    selector_name = choose_selector(ablation)
+    save(ablation, "feature_ablation.csv")
+    save(selection_table(train), "feature_selection.csv")
+
+    classifiers, cls_params = tune(classifier_specs(SELECTORS[selector_name]), train[FEATURES], train[TARGET],
+                                   CV, "roc_auc")
+    cls_summary, cls_metrics, cls_pred = evaluate_classifiers(classifiers, train, test)
+    cls_summary = cls_summary.merge(cls_params, on="model")
+    save(cls_summary, "classification_summary.csv")
+    save(cls_metrics, "classification_metrics.csv")
+    save(cls_pred, "classification_predictions.csv")
+    joblib.dump(classifiers, ARTIFACTS / "classifiers.joblib", compress=3)
+    save(pd.DataFrame(classifiers["ANN (PyTorch)"].named_steps["model"].history_), "ann_history.csv")
+
+    reg_train, reg_test = train.dropna(subset=[REG_TARGET]), test.dropna(subset=[REG_TARGET])
+    regressors, reg_params = tune(regressor_specs(), reg_train[REG_FEATURES], reg_train[REG_TARGET],
+                                  REG_CV, "neg_root_mean_squared_error")
+    reg_metrics, reg_pred = evaluate_regressors(regressors, reg_train, reg_test)
+    save(reg_metrics.merge(reg_params, on="model"), "regression_metrics.csv")
+    save(reg_pred, "regression_predictions.csv")
+    joblib.dump(regressors, ARTIFACTS / "regressors.joblib", compress=3)
+
+    winner = cls_summary.iloc[0].model
+    reg_cv = reg_metrics[reg_metrics.split == "cv"].sort_values("rmse")
+    save(learning_curves(classifiers, train, ["Logistic Regression", "Decision Tree", "Random Forest", "ANN (PyTorch)"]),
+         "learning_curves.csv")
+    save(depth_curve(train), "depth_curve.csv")
+    imp = permutation_importance(classifiers[winner], test[FEATURES], test[TARGET], scoring="roc_auc",
+                                 n_repeats=30, random_state=SEED)
+    save(pd.DataFrame({"feature": FEATURES, "importance": imp.importances_mean, "std": imp.importances_std})
+         .sort_values("importance", ascending=False), "permutation_importance.csv")
+
+    best = cls_metrics[(cls_metrics.model == winner) & (cls_metrics.split == "test")].iloc[0]
+    ann = classifiers["ANN (PyTorch)"].named_steps["model"]
+    summary = {
+        "winner": winner,
+        "regression_winner": reg_cv.iloc[0].model,
+        "selector": selector_name,
+        "threshold": float(best.threshold),
+        "test_metrics": best.drop(["model", "split"]).astype(float).to_dict(),
+        "test_accuracy_at_0.5": float(accuracy_score(test[TARGET], classifiers[winner].predict(test[FEATURES]))),
+        "ann_best_epoch": int(ann.best_epoch_), "ann_epochs_run": len(ann.history_),
+        "duration_seconds": round(time.time() - start, 1),
+        "versions": {"python": platform.python_version(), "sklearn": sklearn.__version__,
+                     "torch": torch.__version__, "pandas": pd.__version__},
+    }
+    (ARTIFACTS / "run_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
+if __name__ == "__main__":
+    from data_pipeline import prepare_data
+    prepare_data()
+    print(json.dumps(run(), indent=2))

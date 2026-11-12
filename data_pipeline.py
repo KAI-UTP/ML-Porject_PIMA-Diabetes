@@ -1,94 +1,150 @@
-"""Prepare the PIMA Indians Diabetes dataset used in Labs 1 and 3."""
+"""PIMA Indians Diabetes: loading, cleaning, splitting and feature engineering."""
 from pathlib import Path
-import hashlib, json, urllib.request
+import hashlib
+import json
+import urllib.request
+
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.compose import ColumnTransformer, make_column_selector
+from sklearn.impute import SimpleImputer
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, RobustScaler, StandardScaler
 
 ROOT = Path(__file__).resolve().parent
 SEED = 42
 SOURCE_URL = "https://raw.githubusercontent.com/jbrownlee/Datasets/master/pima-indians-diabetes.data.csv"
-COLUMNS = ["pregnancies", "glucose", "blood_pressure", "skin_thickness", "insulin", "bmi", "diabetes_pedigree", "age", "outcome"]
-CLASS_FEATURES = COLUMNS[:-1]
-REG_FEATURES = [c for c in CLASS_FEATURES if c != "bmi"]
+
+COLUMNS = ["pregnancies", "glucose", "blood_pressure", "skin_thickness", "insulin",
+           "bmi", "diabetes_pedigree", "age", "outcome"]
+FEATURES = COLUMNS[:-1]
+TARGET = "outcome"
+# A value of 0 is physically impossible for these measurements, so it means "not recorded".
 ZERO_AS_MISSING = ["glucose", "blood_pressure", "skin_thickness", "insulin", "bmi"]
 
+# Secondary regression task: predict BMI from the other measurements (BMI itself is excluded).
+REG_TARGET = "bmi"
+REG_FEATURES = [c for c in FEATURES if c != REG_TARGET] + [TARGET]
 
-class FeatureEngineer(BaseEstimator, TransformerMixin):
-    def __init__(self, task="classification", enabled=True):
-        self.task, self.enabled = task, enabled
+UNITS = {"pregnancies": "count", "glucose": "mg/dL", "blood_pressure": "mm Hg", "skin_thickness": "mm",
+         "insulin": "µU/mL", "bmi": "kg/m²", "diabetes_pedigree": "score", "age": "years"}
 
-    def fit(self, X, y=None):
-        return self
 
-    def transform(self, X):
-        d = X.copy()
-        for column in ZERO_AS_MISSING:
-            if column in d:
-                d[column] = d[column].replace(0, np.nan)
-        if self.enabled:
-            d["age_band"] = pd.cut(d.age, [20, 30, 40, 50, 60, 100], labels=["21-30", "31-40", "41-50", "51-60", "61+"]).astype(object)
-            d["glucose_age"] = d.glucose * d.age
-            d["pregnancies_per_age"] = d.pregnancies / d.age
-            if self.task == "classification":
-                d["glucose_bmi"] = d.glucose * d.bmi
-        return d
+# ---------------------------------------------------------------- 1. Load and clean
+
+def load_raw() -> pd.DataFrame:
+    """Read the lab CSV, downloading it once if it is not cached locally."""
+    path = ROOT / "data" / "raw" / "pima-indians-diabetes.csv"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(SOURCE_URL, path)
+    return pd.read_csv(path, names=COLUMNS)
 
 
 def clean_data(raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Fix types, drop duplicates/invalid rows and turn impossible zeros into NaN."""
     if list(raw.columns) != COLUMNS:
         raise ValueError("Unexpected PIMA schema")
-    d = raw.copy()
+    d = raw.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
     audit = {"raw_rows": len(d), "duplicate_rows": int(d.duplicated().sum())}
-    for c in COLUMNS:
-        d[c] = pd.to_numeric(d[c], errors="coerce")
-    d = d.replace([np.inf, -np.inf], np.nan)
-    audit["duplicate_rows"] = int(d.duplicated().sum())
     d = d.drop_duplicates().reset_index(drop=True)
-    audit["invalid_zero_counts"] = {c: int((d[c] == 0).sum()) for c in ZERO_AS_MISSING}
+
+    audit["zero_as_missing"] = {c: int((d[c] == 0).sum()) for c in ZERO_AS_MISSING}
     d[ZERO_AS_MISSING] = d[ZERO_AS_MISSING].replace(0, np.nan)
-    valid = d.outcome.isin([0, 1]) & d.pregnancies.ge(0) & d.age.between(21, 100)
-    valid &= d.pregnancies.mod(1).eq(0) & d.age.mod(1).eq(0)
-    valid &= ~d[CLASS_FEATURES].lt(0).any(axis=1)
+
+    valid = (d[TARGET].isin([0, 1]) & d.age.between(21, 100) & d.pregnancies.ge(0)
+             & d.pregnancies.mod(1).eq(0) & d.age.mod(1).eq(0) & ~d[FEATURES].lt(0).any(axis=1))
     audit["invalid_rows_removed"] = int((~valid).sum())
     d = d.loc[valid].reset_index(drop=True)
+    d[TARGET] = d[TARGET].astype(int)
     return d, audit
 
 
 def prepare_data() -> tuple[pd.DataFrame, dict]:
-    raw_dir = ROOT / "data" / "raw"
-    out_dir = ROOT / "data" / "processed"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    raw_path = raw_dir / "pima-indians-diabetes.csv"
-    if not raw_path.exists():
-        urllib.request.urlretrieve(SOURCE_URL, raw_path)
-    raw = pd.read_csv(raw_path, names=COLUMNS)
-    d, audit = clean_data(raw)
-    from sklearn.model_selection import train_test_split
-    train, remainder = train_test_split(d, test_size=.40, stratify=d.outcome, random_state=SEED)
-    validation, test = train_test_split(remainder, test_size=.50, stratify=remainder.outcome, random_state=SEED)
-    parts = []
-    for name, frame in [("train", train), ("validation", validation), ("test", test)]:
-        f = frame.copy(); f["split"] = name; parts.append(f)
-    cohort = pd.concat(parts).reset_index(drop=True)
+    """Clean the data, make one stratified 80/20 train/test split and save it."""
+    d, audit = clean_data(load_raw())
+    train, test = train_test_split(d, test_size=0.20, stratify=d[TARGET], random_state=SEED)
+    cohort = pd.concat([train.assign(split="train"), test.assign(split="test")]).reset_index(drop=True)
     cohort.insert(0, "record_id", np.arange(1, len(cohort) + 1))
-    cohort.to_csv(out_dir / "cohort.csv", index=False)
+
+    out = ROOT / "data" / "processed"
+    out.mkdir(parents=True, exist_ok=True)
+    cohort.to_csv(out / "cohort.csv", index=False)
+    raw_path = ROOT / "data" / "raw" / "pima-indians-diabetes.csv"
     meta = {
         "source_url": SOURCE_URL,
         "source_sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
         "seed": SEED,
         "rows": len(cohort),
         "split_counts": cohort.split.value_counts().to_dict(),
-        "class_counts": cohort.outcome.value_counts().sort_index().to_dict(),
+        "class_counts": cohort[TARGET].value_counts().sort_index().to_dict(),
         "audit": audit,
-        "classification_target": "Outcome: diabetes test result (0/1)",
-        "regression_target": "BMI, using only rows where BMI was recorded and excluding BMI-derived predictors",
     }
-    (out_dir / "provenance.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    (out / "provenance.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return cohort, meta
 
 
+def load_cohort() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return the saved (train, test) frames, creating them on first use."""
+    path = ROOT / "data" / "processed" / "cohort.csv"
+    d = pd.read_csv(path) if path.exists() else prepare_data()[0]
+    return d[d.split == "train"].reset_index(drop=True), d[d.split == "test"].reset_index(drop=True)
+
+
+# ---------------------------------------------------------------- 2. Feature engineering
+
+class FeatureEngineer(BaseEstimator, TransformerMixin):
+    """Stateless feature step used inside every model pipeline.
+
+    zeros_as_missing=False restores the raw zeros (used only for the "raw data" ablation).
+    engineered=True adds: log transforms, an interaction term and two binned features.
+    Features whose source column is absent (e.g. BMI in the regression task) are skipped.
+    """
+
+    def __init__(self, zeros_as_missing=True, engineered=True):
+        self.zeros_as_missing = zeros_as_missing
+        self.engineered = engineered
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        d = pd.DataFrame(X).copy()
+        cols = [c for c in ZERO_AS_MISSING if c in d]
+        d[cols] = d[cols].replace(0, np.nan) if self.zeros_as_missing else d[cols].fillna(0)
+        if not self.engineered:
+            return d
+        # Log transform: insulin and pedigree are strongly right-skewed.
+        for col, new in [("insulin", "log_insulin"), ("diabetes_pedigree", "log_pedigree")]:
+            if col in d:
+                d[new] = np.log1p(d.pop(col))
+        # Interaction term: high glucose matters more when BMI is also high.
+        if {"glucose", "bmi"} <= set(d):
+            d["glucose_x_bmi"] = d.glucose * d.bmi
+        # Binning: clinical age groups and WHO BMI classes.
+        if "age" in d:
+            d["age_band"] = pd.cut(d.age, [0, 30, 40, 50, 200], labels=["21-30", "31-40", "41-50", "51+"]).astype(object)
+        if "bmi" in d:
+            d["bmi_class"] = pd.cut(d.bmi, [0, 25, 30, 35, 200], right=False,
+                                    labels=["normal", "overweight", "obese I", "obese II+"]).astype(object)
+        return d
+
+
+def build_preprocessor(zeros_as_missing=True, engineered=True, scaler="standard") -> Pipeline:
+    """Feature engineering -> median imputation (+ missing flags) -> scaling, one-hot encoding."""
+    scalers = {"standard": StandardScaler(), "robust": RobustScaler(), None: "passthrough"}
+    numeric = Pipeline([("impute", SimpleImputer(strategy="median", add_indicator=True)),
+                        ("scale", scalers[scaler])])
+    categorical = Pipeline([("impute", SimpleImputer(strategy="most_frequent")),
+                            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))])
+    columns = ColumnTransformer([
+        ("num", numeric, make_column_selector(dtype_include=np.number)),
+        ("cat", categorical, make_column_selector(dtype_include=object)),
+    ], verbose_feature_names_out=False)
+    return Pipeline([("engineer", FeatureEngineer(zeros_as_missing, engineered)), ("columns", columns)])
+
+
 if __name__ == "__main__":
-    _, metadata = prepare_data()
-    print(json.dumps(metadata, indent=2))
+    print(json.dumps(prepare_data()[1], indent=2))

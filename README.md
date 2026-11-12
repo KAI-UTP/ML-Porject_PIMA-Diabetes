@@ -1,49 +1,56 @@
-# PIMA Diabetes machine-learning project
+# Diabetes Prediction · PIMA Indians (TDB3123 ML Project)
 
-This project rebuilds the coursework around the PIMA dataset used in Labs 1 and 3.
+CRISP-DM project on the PIMA Indians Diabetes dataset (Labs 1 and 3): data cleaning, feature engineering and
+selection, six classifiers, a PyTorch neural network, BMI regression and bias–variance analysis, with a
+Streamlit dashboard.
 
-## Run the dashboard
+**Live app:** https://ml-porjectpima.streamlit.app/
 
-```powershell
-.\Run Dashboard.ps1
-```
+## Results (held-out test set, 154 patients)
 
-Then open http://127.0.0.1:8502.
+| | Best model | Result |
+|---|---|---|
+| Classification | SVM (RBF); logistic regression and ANN equal within CV std | ROC-AUC 0.83, recall 78% at the tuned threshold |
+| Regression (BMI) | Lasso | RMSE 5.37, R² 0.43 (mean baseline RMSE 7.12) |
+| Neural network | PyTorch 32-16, dropout, early stopping | ROC-AUC 0.83, recall 85% |
 
-## Deploy on Streamlit Community Cloud
+## Project structure
 
-1. Open https://share.streamlit.io and connect the GitHub account with repository access.
-2. Create an app and select `KAI-UTP/ML-Porject_PIMA-Diabetes`.
-3. Use branch `main` and entrypoint `app.py`.
-4. In Advanced settings, select Python 3.13. No secrets are required.
-5. Deploy and wait for the dependency installation and health check.
+| File | Purpose |
+|---|---|
+| `data_pipeline.py` | Load, clean (zeros → missing), 80/20 stratified split, feature engineering, preprocessing pipeline |
+| `ann.py` | PyTorch feed-forward network as a scikit-learn classifier |
+| `train.py` | Feature ablation and selection, grid search (5-fold CV), evaluation, learning curves; saves `artifacts/` |
+| `notebooks/PIMA_Diabetes_Project.ipynb` | Fully documented, executed analysis (Parts A–D and discussion) |
+| `build_report.py` | Builds `reports/REPORT.md/.html`, figures and presentation outline from `artifacts/` |
+| `app.py` | Streamlit dashboard |
+| `tests/` | Data, leakage and app tests |
 
-The root `requirements.txt` contains only the pinned app runtime dependencies. Community Cloud redeploys after future pushes to `main`.
+## Assignment coverage
 
-## Reproduce
+| Requirement | Where |
+|---|---|
+| A · CRISP-DM, missing data, encoding, normalization, outliers | Notebook §1–3, `data_pipeline.py`, `outlier_audit` |
+| B · Feature selection (filter, wrapper, embedded) | Notebook §5, `selection_table`; mutual information used in final grids |
+| B · Feature engineering (log, interaction, binning) | Notebook §4, `FeatureEngineer`; impact in §6 |
+| C · Classification, regression, ANN | Notebook §7–9 |
+| D · Metrics, learning curves, bias–variance, 4 discussion questions | Notebook §10–14, report §3–4 |
+| Report ≤ 3000 words with tables and plots | `reports/REPORT.html` (word limit checked by `build_report.py`) |
+
+Still to do by the group: names/IDs in the report and notebook, Turnitin check, presentation slides.
+
+## Run
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-validated.txt
-.\.venv\Scripts\python.exe data_pipeline.py
-.\.venv\Scripts\python.exe train.py
-.\.venv\Scripts\python.exe build_deliverables.py
+.\.venv\Scripts\python.exe train.py            # ~1.5 min: data + all experiments -> artifacts/
+.\.venv\Scripts\python.exe build_report.py     # report, figures, outline
 .\.venv\Scripts\python.exe -m pytest -q
+.\Run Dashboard.ps1                            # http://127.0.0.1:8502
 ```
 
-## Main files
+`requirements.txt` holds only the app dependencies for Streamlit Community Cloud (entry point `app.py`, Python 3.13).
+Retrain after changing scikit-learn or PyTorch versions.
 
-- `data_pipeline.py`: download, validation, missing values, and train/validation/test split.
-- `train.py`: classification, BMI regression, ANN, feature experiments, and saved results.
-- `app.py`: Streamlit dashboard with model evaluation, patient-level model comparison, sensitivity, and what-if analysis.
-- `notebooks/PIMA_Diabetes_Project.ipynb`: executed analysis.
-- `reports/REPORT.html`: report with measured results.
-- `reports/PRESENTATION_OUTLINE.md`: concise presentation structure.
-
-The prediction page is for coursework demonstration, not diagnosis. The report needs student names and group review before submission.
-
-`requirements-validated.txt` records the tested direct dependency versions. `requirements.txt` gives broader supported ranges; retrain before loading saved models after changing scikit-learn versions. The tested PyTorch build was CPU-only. This is not a complete transitive lockfile or a fresh-environment installation certification.
-
-The executed notebook reruns data preparation and training. The report generator executes that notebook, so run it after training. Start the dashboard after generation finishes; restart a running dashboard after retraining to reload all artifacts together.
-
-See `docs/REQUIREMENTS_AUDIT.md` for evidence against every assignment item and the remaining student submission tasks. Threshold-dependent metrics use the selected operating policy consistently. Controlled feature experiments use fixed C=1; the separately tuned models form the prediction leaderboard.
+Coursework demonstration only, not a medical diagnosis tool.

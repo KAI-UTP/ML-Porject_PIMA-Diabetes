@@ -1,32 +1,22 @@
 {
-  "winner": "Logistic / raw",
-  "regression_winner": "Random forest regressor",
-  "threshold": 0.19504510528374808,
-  "test_at_selected_threshold": {
-    "accuracy": 0.6428571428571429,
-    "precision": 0.48936170212765956,
-    "recall": 0.8679245283018868,
-    "f1": 0.6258503401360545,
-    "roc_auc": 0.7932000747244535,
-    "average_precision": 0.6802663061414909,
-    "brier": 0.17402574962166997,
-    "n": 154,
-    "positives": 53,
-    "threshold": 0.19504510528374808
+  "winner": "SVM (RBF)",
+  "regression_winner": "Lasso",
+  "selector": "Mutual information (filter)",
+  "threshold": 0.3735033990384602,
+  "test_metrics": {
+    "accuracy": 0.7662337662337663,
+    "precision": 0.6363636363636364,
+    "recall": 0.7777777777777778,
+    "f1": 0.7,
+    "roc_auc": 0.8266666666666667,
+    "average_precision": 0.7261196217468742,
+    "brier": 0.16251543397877205,
+    "threshold": 0.3735033990384602
   },
-  "bootstrap_95pct": {
-    "roc_auc": [
-      0.724205892949605,
-      0.8614469056853511
-    ],
-    "average_precision": [
-      0.5575128027640924,
-      0.7895302923160253
-    ]
-  },
-  "ann_best_epoch": 97,
-  "ann_epochs_run": 112,
-  "duration_seconds": 27.7,
+  "test_accuracy_at_0.5": 0.7207792207792207,
+  "ann_best_epoch": 19,
+  "ann_epochs_run": 44,
+  "duration_seconds": 82.9,
   "versions": {
     "python": "3.13.3",
     "sklearn": "1.9.1",
