@@ -16,7 +16,7 @@
   "test_accuracy_at_0.5": 0.7207792207792207,
   "ann_best_epoch": 19,
   "ann_epochs_run": 44,
-  "duration_seconds": 82.9,
+  "duration_seconds": 87.6,
   "versions": {
     "python": "3.13.3",
     "sklearn": "1.9.1",

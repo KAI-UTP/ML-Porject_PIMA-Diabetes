@@ -136,7 +136,7 @@ def selection_table(train) -> pd.DataFrame:
     for name, selector in SELECTORS.items():
         table[name] = clone(selector).fit(X, y).get_support()
     table["mutual_information"] = mutual_info_classif(X, y, random_state=SEED)
-    table["lasso_coefficient"] = SELECTORS["LASSO L1 (embedded)"].estimator.fit(X, y).coef_.ravel()
+    table["lasso_coefficient"] = clone(SELECTORS["LASSO L1 (embedded)"].estimator).fit(X, y).coef_.ravel()
     forest = RandomForestClassifier(n_estimators=300, min_samples_leaf=5, random_state=SEED).fit(X, y)
     table["rf_importance"] = forest.feature_importances_
     return table.sort_values("mutual_information", ascending=False).reset_index(drop=True)

@@ -11,9 +11,10 @@ from sklearn.calibration import calibration_curve
 from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
 
 from data_pipeline import FEATURES, ROOT, UNITS, ZERO_AS_MISSING
+from chart_style import ACCENT, DIVERGING, MODEL_COLORS, NEUTRAL, OUTCOME_COLORS, SERIES
 
 A = ROOT / "artifacts"
-PURPLE, ORANGE, TEAL, GREY, LIGHT = "#7147B8", "#E1785C", "#3B8C88", "#A9A0B5", "#E8E2EF"
+PURPLE, ORANGE, GREY = ACCENT, SERIES[1], NEUTRAL
 OUTCOME = {0: "No diabetes", 1: "Diabetes"}
 label = lambda name: name.replace("_", " ").capitalize()
 
@@ -21,12 +22,15 @@ st.set_page_config(page_title="PIMA Diabetes ML", page_icon="🩺", layout="wide
 st.markdown("""<style>
 .block-container{max-width:1350px;padding-top:2rem}
 .hero{padding:28px 34px;border-radius:18px;background:linear-gradient(120deg,#2A174B,#7147B8);color:#fff;margin-bottom:1rem}
-.hero h1{color:#fff;margin:0 0 .3rem}.hero p{margin:0;opacity:.9}
+.hero h1{color:#fff;margin:0 0 .3rem;font-size:clamp(1.5rem,4vw,2.6rem);word-break:normal;overflow-wrap:normal;hyphens:none}.hero p{margin:0;opacity:.9}
+@media (max-width:640px){.hero{padding:18px 18px}}
 .step{background:#fff;border:1px solid #e2dced;border-radius:12px;padding:12px 14px;height:100%}
 .step b{color:#7147B8}
+[data-testid="stMetricValue"]{font-size:clamp(1.3rem,2.4vw,2.2rem)}
+[data-testid="stMetricLabel"] p,[data-testid="stMetricDelta"] div{white-space:normal}
 </style>""", unsafe_allow_html=True)
 px.defaults.template = "plotly_white"
-px.defaults.color_discrete_sequence = [PURPLE, ORANGE, TEAL, "#CF9A36", "#5B8DEF", "#C05780", GREY]
+px.defaults.color_discrete_sequence = SERIES
 
 
 # ---------------------------------------------------------------- Data loading
@@ -76,22 +80,22 @@ def page_overview():
     best = cls_summary.set_index("model").loc[WINNER]
     t = summary["test_metrics"]
     st.markdown('<div class="hero"><h1>Diabetes Prediction · PIMA Indians</h1>'
-                "<p>CRISP-DM pipeline: data cleaning, feature engineering and selection, six classifiers, "
+                "<p>CRISP-DM pipeline: data cleaning, feature engineering and selection, five classifiers, "
                 "a PyTorch neural network and BMI regression, with bias–variance analysis.</p></div>",
                 unsafe_allow_html=True)
-    c = st.columns(4)
-    c[0].metric("Patients", meta["rows"], border=True)
-    c[1].metric("With diabetes", f"{meta['class_counts']['1']} ({meta['class_counts']['1'] / meta['rows']:.0%})", border=True)
-    c[2].metric("Train / test", f"{meta['split_counts']['train']} / {meta['split_counts']['test']}", border=True)
-    c[3].metric("Missing insulin", f"{meta['audit']['zero_as_missing']['insulin'] / meta['rows']:.0%}", border=True)
+    off = dict(delta_color="off", delta_arrow="off", border=True)
+    c = st.columns(3)
+    c[0].metric("Patients", meta["rows"], f"{meta['split_counts']['train']}/{meta['split_counts']['test']} split", **off)
+    c[1].metric("With diabetes", meta["class_counts"]["1"], f"{meta['class_counts']['1'] / meta['rows']:.0%} of patients", **off)
+    c[2].metric("Missing insulin", f"{meta['audit']['zero_as_missing']['insulin'] / meta['rows']:.0%}", border=True)
 
-    st.subheader("Best model")
-    c = st.columns(4)
-    c[0].metric("Model (highest CV ROC-AUC)", WINNER, border=True)
-    c[1].metric("Test ROC-AUC", f"{best.test_roc_auc:.3f}", f"95% CI {best.test_auc_ci_low:.2f}–{best.test_auc_ci_high:.2f}",
+    st.subheader(f"Best model: {WINNER}")
+    st.caption("Highest mean ROC-AUC in 5-fold cross-validation (3 repeats) on the training set.")
+    c = st.columns(3)
+    c[0].metric("Test ROC-AUC", f"{best.test_roc_auc:.3f}", f"95% CI {best.test_auc_ci_low:.2f}–{best.test_auc_ci_high:.2f}",
                 delta_color="off", delta_arrow="off", border=True)
-    c[2].metric("Test recall", f"{t['recall']:.0%}", f"threshold {t['threshold']:.2f}", delta_color="off", delta_arrow="off", border=True)
-    c[3].metric("Test accuracy", f"{t['accuracy']:.1%}", f"{summary['test_accuracy_at_0.5']:.1%} at 0.5", delta_color="off", delta_arrow="off", border=True)
+    c[1].metric("Test recall", f"{t['recall']:.0%}", f"threshold {t['threshold']:.2f}", delta_color="off", delta_arrow="off", border=True)
+    c[2].metric("Test accuracy", f"{t['accuracy']:.1%}", f"{summary['test_accuracy_at_0.5']:.1%} at 0.5", delta_color="off", delta_arrow="off", border=True)
 
     st.subheader("Pipeline")
     steps = [("1 · Clean", "Impossible zeros → missing; types, duplicates and ranges checked"),
@@ -100,8 +104,9 @@ def page_overview():
              ("4 · Engineer", "Log transform, glucose × BMI, age and BMI bins"),
              ("5 · Select", "Mutual information vs RFE vs LASSO"),
              ("6 · Model", "Grid search with 5-fold CV; F1 threshold from out-of-fold predictions")]
-    for col, (title, text) in zip(st.columns(len(steps)), steps):
-        col.markdown(f'<div class="step"><b>{title}</b><br><small>{text}</small></div>', unsafe_allow_html=True)
+    for row in (steps[:3], steps[3:]):
+        for col, (title, text) in zip(st.columns(3), row):
+            col.markdown(f'<div class="step"><b>{title}</b><br><small>{text}</small></div>', unsafe_allow_html=True)
 
     st.subheader("All classifiers")
     c = cls_summary[~cls_summary.model.str.startswith("Baseline")].sort_values("cv_roc_auc")
@@ -130,10 +135,10 @@ def page_data():
     feature = st.selectbox("Feature", FEATURES, index=1, format_func=label)
     a, b = st.columns(2)
     with a:
-        show(px.histogram(d, x=feature, color="Outcome", nbins=30, barmode="overlay", opacity=0.7,
+        show(px.histogram(d, x=feature, color="Outcome", nbins=30, barmode="overlay", opacity=0.7, color_discrete_map=OUTCOME_COLORS,
                           title=f"{label(feature)} ({UNITS[feature]}) by outcome"))
     with b:
-        show(px.box(d, x="Outcome", y=feature, color="Outcome", points="outliers",
+        show(px.box(d, x="Outcome", y=feature, color="Outcome", points="outliers", color_discrete_map=OUTCOME_COLORS,
                     title=f"{label(feature)}: spread and outliers"))
 
     a, b = st.columns(2)
@@ -166,7 +171,7 @@ def page_features():
 | Missing indicators | `missingindicator_*` | "Not measured" can itself carry information |
 """)
     ab = table("feature_ablation.csv")
-    fig = px.scatter(ab, x="cv_roc_auc", y="variant", color="model", error_x="cv_std",
+    fig = px.scatter(ab, x="cv_roc_auc", y="variant", color="model", error_x="cv_std", color_discrete_map=MODEL_COLORS,
                      title="Impact of each preparation step (5-fold CV × 3 repeats, training split)",
                      labels={"cv_roc_auc": "CV ROC-AUC", "variant": ""})
     fig.update_traces(marker_size=11)
@@ -234,7 +239,7 @@ def page_evaluation():
         for model in models:
             q = preds[(preds.model == model) & (preds.split == split)]
             fpr, tpr, _ = roc_curve(q.actual, q.probability)
-            fig.add_scatter(x=fpr, y=tpr, name=model, line=dict(width=4 if model == name else 1.5),
+            fig.add_scatter(x=fpr, y=tpr, name=model, line=dict(width=4 if model == name else 1.5, color=MODEL_COLORS[model]),
                             opacity=1 if model == name else 0.45)
         fig.add_scatter(x=[0, 1], y=[0, 1], line=dict(dash="dash", color="grey"), showlegend=False)
         fig.update_layout(title="ROC curves", xaxis_title="False-positive rate", yaxis_title="Recall")
@@ -243,13 +248,13 @@ def page_evaluation():
     a, b = st.columns(2)
     with a:
         precision, recall, _ = precision_recall_curve(p.actual, p.probability)
-        fig = go.Figure(go.Scatter(x=recall, y=precision, name=name, line_color=PURPLE))
+        fig = go.Figure(go.Scatter(x=recall, y=precision, name=name, line_color=MODEL_COLORS[name]))
         fig.add_hline(y=p.actual.mean(), line_dash="dash", annotation_text="baseline (prevalence)")
         fig.update_layout(title="Precision–recall", xaxis_title="Recall", yaxis_title="Precision")
         show(fig)
     with b:
         observed, predicted = calibration_curve(p.actual, p.probability, n_bins=6, strategy="quantile")
-        fig = go.Figure(go.Scatter(x=predicted, y=observed, mode="lines+markers", name=name, line_color=PURPLE))
+        fig = go.Figure(go.Scatter(x=predicted, y=observed, mode="lines+markers", name=name, line_color=MODEL_COLORS[name]))
         fig.add_scatter(x=[0, 1], y=[0, 1], line=dict(dash="dash", color="grey"), name="Perfect calibration")
         fig.update_layout(title="Calibration (reliability)", xaxis_title="Mean predicted probability",
                           yaxis_title="Observed diabetes rate", xaxis_range=[0, 1], yaxis_range=[0, 1])
@@ -330,12 +335,11 @@ def page_bias_variance():
 
 def page_prediction():
     st.title("Prediction lab")
-    st.warning("Educational demo trained on 614 Pima women aged 21+. It is not a medical diagnosis.")
     models = [m for m in cls_summary.model if not m.startswith("Baseline")]
     name = st.selectbox("Model", models, index=models.index(WINNER))
 
     with st.form("patient"):
-        st.caption("Leave a field empty if it was not measured; the model imputes it like in training.")
+        st.caption("Leave a field empty if it was not measured; it is imputed with the training median.")
         c = st.columns(4)
         values = {
             "pregnancies": c[0].number_input("Pregnancies", 0, 20, 2),
@@ -361,7 +365,7 @@ def page_prediction():
     a, b, c = st.columns(3)
     a.metric("Predicted probability", f"{p:.1%}", border=True)
     b.metric("Model threshold", f"{threshold:.1%}", border=True)
-    c.metric("Screening result", "Refer for test" if p >= threshold else "Low risk", border=True)
+    c.metric("Predicted class", OUTCOME[int(p >= threshold)], border=True)
 
     tab1, tab2, tab3 = st.tabs(["All models", "What-if", "Input sensitivity"])
     with tab1:
@@ -377,6 +381,7 @@ def page_prediction():
         test = table("classification_predictions.csv")
         test = test[(test.model == name) & (test.split == "test")]
         fig = px.histogram(test, x="probability", color=test.actual.map(OUTCOME), nbins=20, barmode="overlay",
+                           color_discrete_map=OUTCOME_COLORS, labels={"color": "Outcome"},
                            opacity=0.7, title="This patient among the 154 test patients")
         fig.add_vline(x=p, line_width=3, line_color=PURPLE, annotation_text="this patient")
         fig.add_vline(x=threshold, line_dash="dash", line_color=ORANGE, annotation_text="threshold")
@@ -385,6 +390,8 @@ def page_prediction():
         feature = st.selectbox("Change one input", FEATURES, index=1, format_func=label)
         train = cohort[cohort.split == "train"]
         grid = np.linspace(*train[feature].quantile([0.02, 0.98]), 60)
+        if feature in ("pregnancies", "age"):
+            grid = np.unique(np.round(grid))
         scenarios = pd.concat([x] * len(grid), ignore_index=True).assign(**{feature: grid})
         fig = px.line(x=grid, y=prob(name, scenarios), labels={"x": f"{label(feature)} ({UNITS[feature]})", "y": "Probability"},
                       title=f"{name}: probability as only {label(feature).lower()} changes")
@@ -398,28 +405,29 @@ def page_prediction():
         rows = [{"feature": label(f), "change": p - float(prob(name, x.assign(**{f: medians[f]}))[0])} for f in FEATURES]
         imp = pd.DataFrame(rows).sort_values("change")
         fig = px.bar(imp, x="change", y="feature", orientation="h", color="change", color_continuous_midpoint=0,
-                     color_continuous_scale=[TEAL, LIGHT, ORANGE],
+                     color_continuous_scale=DIVERGING,
                      title="How much each input moves the probability vs the training median")
         fig.update_layout(coloraxis_showscale=False)
         fig.update_xaxes(tickformat="+.0%")
         show(fig)
-        st.caption("One input is replaced at a time. This shows model sensitivity, not medical cause.")
+        st.caption("One input is replaced at a time, so the bars show model sensitivity rather than causal effects.")
 
 
 def page_about():
-    st.title("About this project")
+    st.title("Methodology")
     st.markdown(f"""
-**Dataset:** PIMA Indians Diabetes ({meta['rows']} women of Pima heritage aged 21+, 8 measurements, binary outcome), used in Labs 1 and 3.
+**Dataset:** PIMA Indians Diabetes ({meta['rows']} women of Pima heritage aged 21+, 8 clinical measurements, binary outcome).
 
-**Method (CRISP-DM)**
-1. *Business understanding* – screening aid for diabetes; secondary BMI regression.
+**CRISP-DM**
+1. *Business understanding* – identify patients with diabetes from routine measurements; secondary task: BMI regression.
 2. *Data understanding* – class imbalance (35% positive), impossible zeros, skewed insulin and pedigree.
 3. *Data preparation* – zeros → missing, median imputation + indicators, scaling, one-hot encoding, IQR outlier audit (kept).
 4. *Features* – log transforms, glucose × BMI, age/BMI binning; filter vs wrapper vs embedded selection.
 5. *Modeling* – grid search with 5-fold stratified CV; F1-optimal threshold from out-of-fold predictions; PyTorch ANN with early stopping.
 6. *Evaluation* – repeated CV for model choice, a held-out test set used once, bootstrap confidence intervals, learning and validation curves.
+7. *Deployment* – this dashboard serves the trained pipelines for exploration and prediction.
 
-**Limitations:** small single-population dataset, one random test split, no external validation. Not for clinical use.
+**Limitations:** small single-population dataset, one random test split, no external validation.
 
 **Reproduce:** `python data_pipeline.py` → `python train.py` → `python build_report.py` → `streamlit run app.py`
 (run in {summary['duration_seconds']:.0f} s with scikit-learn {summary['versions']['sklearn']} and PyTorch {summary['versions']['torch']}).
@@ -430,9 +438,8 @@ def page_about():
 
 PAGES = {"Overview": page_overview, "Data explorer": page_data, "Features": page_features,
          "Model evaluation": page_evaluation, "Bias–variance": page_bias_variance,
-         "Prediction lab": page_prediction, "About": page_about}
+         "Prediction lab": page_prediction, "Methodology": page_about}
 st.sidebar.title("🩺 PIMA Diabetes")
 page = st.sidebar.radio("Page", list(PAGES))
 st.sidebar.caption(f"Best model: **{WINNER}**")
-st.sidebar.info("Coursework project · not for clinical diagnosis.")
 PAGES[page]()

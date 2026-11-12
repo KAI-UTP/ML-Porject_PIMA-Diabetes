@@ -3,7 +3,7 @@ from pathlib import Path
 from streamlit.testing.v1 import AppTest
 
 APP = str(Path(__file__).resolve().parents[1] / "app.py")
-PAGES = ["Overview", "Data explorer", "Features", "Model evaluation", "Bias–variance", "Prediction lab", "About"]
+PAGES = ["Overview", "Data explorer", "Features", "Model evaluation", "Bias–variance", "Prediction lab", "Methodology"]
 
 
 def test_every_page_renders():

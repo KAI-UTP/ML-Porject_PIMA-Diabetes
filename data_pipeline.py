@@ -35,7 +35,7 @@ UNITS = {"pregnancies": "count", "glucose": "mg/dL", "blood_pressure": "mm Hg", 
 # ---------------------------------------------------------------- 1. Load and clean
 
 def load_raw() -> pd.DataFrame:
-    """Read the lab CSV, downloading it once if it is not cached locally."""
+    """Read the dataset CSV, downloading it once if it is not cached locally."""
     path = ROOT / "data" / "raw" / "pima-indians-diabetes.csv"
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
