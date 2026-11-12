@@ -48,7 +48,7 @@ def load_core():
     return cohort, meta, summary
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner="Loading trained models (first prediction only)…")
 def classifiers():
     return joblib.load(A / "classifiers.joblib")
 
