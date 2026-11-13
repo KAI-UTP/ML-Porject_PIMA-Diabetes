@@ -152,7 +152,9 @@ def page_data():
                        color_continuous_scale="RdBu_r", title="Correlation"))
 
     with st.expander("Outlier audit (1.5 × IQR fences from the training split)"):
-        st.dataframe(table("outlier_audit.csv"), hide_index=True, width="stretch")
+        st.dataframe(table("outlier_audit.csv"), hide_index=True, width="stretch",
+                     column_config={"feature": "Feature", "split": "Split", "lower_fence": "Lower fence",
+                                    "upper_fence": "Upper fence", "outliers": "Outliers", "recorded": "Recorded values"})
         st.caption("Outliers are flagged but kept: they are rare but medically plausible values.")
     with st.expander("Cleaning audit"):
         st.json(meta["audit"])
@@ -191,7 +193,7 @@ def page_features():
         s = sel.sort_values(metric)
         show(px.bar(s, x=metric, y="feature", orientation="h", title="Feature scores", labels={metric: "", "feature": ""}), 620)
     with b:
-        kept = sel.set_index("feature")[["Mutual information (filter)", "RFE (wrapper)", "LASSO L1 (embedded)"]]
+        kept = sel.rename(columns={"feature": "Feature"}).set_index("Feature")[["Mutual information (filter)", "RFE (wrapper)", "LASSO L1 (embedded)"]]
         st.markdown("**Features kept by each method**")
         st.dataframe(kept.replace({True: "✅", False: ""}), width="stretch", height=620)
 
@@ -211,7 +213,7 @@ def page_evaluation():
     st.dataframe(view[["model", "cv_roc_auc", "cv_roc_auc_std", "train_roc_auc", "test_roc_auc", "test_auc_ci_low",
                        "test_auc_ci_high", "threshold", "best_params"]].round(3),
                  hide_index=True, width="stretch",
-                 column_config={"cv_roc_auc": "CV ROC-AUC", "cv_roc_auc_std": "CV std", "train_roc_auc": "Train ROC-AUC",
+                 column_config={"model": "Model", "cv_roc_auc": "CV ROC-AUC", "cv_roc_auc_std": "CV std", "train_roc_auc": "Train ROC-AUC",
                                 "test_roc_auc": "Test ROC-AUC", "test_auc_ci_low": "Test CI low",
                                 "test_auc_ci_high": "Test CI high", "threshold": "Tuned threshold",
                                 "best_params": "Best hyper-parameters"})
@@ -265,7 +267,8 @@ def regression_view():
     m = table("regression_metrics.csv")
     st.caption("Target: BMI. Inputs: the other seven measurements and the diabetes outcome. Rows without BMI are excluded.")
     pivot = m.pivot(index="model", columns="split", values=["rmse", "r2", "mae"])
-    pivot.columns = [f"{metric.upper()} ({split})" for metric, split in pivot.columns]
+    pivot.columns = [f"{ {'rmse': 'RMSE', 'r2': 'R²', 'mae': 'MAE'}[metric]} ({split})" for metric, split in pivot.columns]
+    pivot.index.name = "Model"
     st.dataframe(pivot.sort_values("RMSE (cv)").round(3), width="stretch")
     show(px.bar(m[m.split != "train"], x="model", y="rmse", color="split", barmode="group",
                 title="RMSE by model (lower is better)", labels={"rmse": "RMSE (kg/m²)", "model": ""}))
@@ -429,7 +432,7 @@ def page_about():
 
 **Limitations:** small single-population dataset, one random test split, no external validation.
 
-**Reproduce:** `python data_pipeline.py` → `python train.py` → `python build_report.py` → `streamlit run app.py`
+**Reproduce:** `python data_pipeline.py` → `python train.py` → `streamlit run app.py`
 (run in {summary['duration_seconds']:.0f} s with scikit-learn {summary['versions']['sklearn']} and PyTorch {summary['versions']['torch']}).
 """)
     st.download_button("Download report (HTML)", (ROOT / "reports/REPORT.html").read_bytes(), "PIMA_Diabetes_Report.html",

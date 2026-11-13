@@ -30,7 +30,6 @@ and bias–variance analysis, served through a Streamlit dashboard.
 | `ann.py` | PyTorch feed-forward network as a scikit-learn classifier |
 | `train.py` | All experiments; saves results to `artifacts/` |
 | `notebooks/PIMA_Diabetes_Project.ipynb` | Documented, executed analysis |
-| `build_report.py` | Builds `reports/REPORT.md` / `REPORT.html`, figures and presentation outline |
 | `app.py` | Streamlit dashboard |
 | `tests/` | Data, leakage and dashboard tests |
 
@@ -40,7 +39,6 @@ and bias–variance analysis, served through a Streamlit dashboard.
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-validated.txt
 .\.venv\Scripts\python.exe train.py            # data + all experiments (~1.5 min)
-.\.venv\Scripts\python.exe build_report.py     # report, figures, outline
 .\.venv\Scripts\python.exe -m pytest -q
 .\Run Dashboard.ps1                            # http://127.0.0.1:8502
 ```
